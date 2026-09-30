@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+  >
+  <meta name="theme-color" content="#07111f">
+  <meta
+    name="description"
+    content="PULSEWING — a fast procedural arcade flight game."
+  >
+  <title>PULSEWING</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <main id="app">
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+
+        <div>
+          <div class="brand-name">PULSEWING</div>
+          <div class="brand-sub">RIFT RUN</div>
+        </div>
+      </div>
+
+      <div class="top-stats">
+        <div class="stat">
+          <span class="label">BEST</span>
+          <span id="bestScore">0</span>
+        </div>
+
+        <div class="stat">
+          <span class="label">RUN</span>
+          <span id="runScore">0</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="game-shell">
+
+      <div class="hud">
+        <div class="hud-left">
+          <div class="score-large" id="score">0</div>
+          <div class="combo" id="combo">COMBO ×1</div>
+        </div>
+
+        <div class="hud-right">
+          <div class="speed">
+            <span>SPEED</span>
+            <strong id="speedValue">1.0×</strong>
+          </div>
+
+          <div class="shield" id="shieldIndicator">
+            <span class="shield-icon">◇</span>
+            <span>SHIELD</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="gameCanvas"></canvas>
+
+        <div class="tap-hint" id="tapHint">
+          <div class="tap-icon">↑</div>
+          <div>TAP TO PULSE</div>
+          <small>SPACE / CLICK / TAP</small>
+        </div>
+
+        <div class="pause-indicator hidden" id="pauseIndicator">
+          PAUSED
+        </div>
+
+        <div class="flash" id="flash"></div>
+      </div>
+
+      <div class="controls">
+        <button id="pauseButton" class="control-button">
+          PAUSE
+        </button>
+
+        <div class="run-info">
+          <span id="gateCount">0 GATES</span>
+          <span>•</span>
+          <span id="shardCount">0 SHARDS</span>
+        </div>
+
+        <button id="restartButton" class="control-button">
+          RESTART
+        </button>
+      </div>
+
+    </section>
+
+    <section class="start-screen" id="startScreen">
+      <div class="start-card">
+
+        <div class="logo-orb">
+          <div class="orb-core"></div>
+          <div class="orb-ring ring-1"></div>
+          <div class="orb-ring ring-2"></div>
+        </div>
+
+        <div class="eyebrow">RIFT RUN // 01</div>
+
+        <h1>PULSE<span>WING</span></h1>
+
+        <p>
+          Ride the pulse.<br>
+          Break the gates.<br>
+          Don't lose the rhythm.
+        </p>
+
+        <button id="startButton" class="primary-button">
+          START RUN
+        </button>
+
+        <div class="controls-note">
+          TAP / CLICK / SPACE
+        </div>
+
+      </div>
+    </section>
+
+    <section class="game-over hidden" id="gameOver">
+
+      <div class="game-over-card">
+
+        <div class="eyebrow">RUN TERMINATED</div>
+
+        <h2>RIFT COLLISION</h2>
+
+        <div class="final-score">
+          <span>SCORE</span>
+          <strong id="finalScore">0</strong>
+        </div>
+
+        <div class="results-grid">
+          <div>
+            <span>GATES</span>
+            <strong id="finalGates">0</strong>
+          </div>
+
+          <div>
+            <span>SHARDS</span>
+            <strong id="finalShards">0</strong>
+          </div>
+
+          <div>
+            <span>COMBO</span>
+            <strong id="finalCombo">×1</strong>
+          </div>
+
+          <div>
+            <span>BEST</span>
+            <strong id="finalBest">0</strong>
+          </div>
+        </div>
+
+        <div class="game-over-actions">
+          <button id="retryButton" class="primary-button">
+            RUN AGAIN
+          </button>
+
+          <button id="shareButton" class="secondary-button">
+            COPY RUN
+          </button>
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
