@@ -1,88 +1,89 @@
 "use strict";
 
-/*
-  PULSEWING
-  Phase 1: deterministic arcade game engine.
-
-  Important:
-  The game is intentionally written without external dependencies.
-
-  Later AI systems will use:
-      window.PulseWingAI.getState()
-      window.PulseWingAI.step(action)
-      window.PulseWingAI.reset(seed)
-
-  This means the AI will play the exact same game as the human.
-*/
-
 const canvas = document.getElementById("gameCanvas");
+if (!canvas) {
+  throw new Error("PULSEWING: #gameCanvas not found");
+}
+
 const ctx = canvas.getContext("2d", { alpha: false });
 
-const scoreEl = document.getElementById("score");
-const bestScoreEl = document.getElementById("bestScore");
-const runScoreEl = document.getElementById("runScore");
-const comboEl = document.getElementById("combo");
-const speedValueEl = document.getElementById("speedValue");
-const gateCountEl = document.getElementById("gateCount");
-const shardCountEl = document.getElementById("shardCount");
-const shieldIndicator = document.getElementById("shieldIndicator");
+const $ = (id) => document.getElementById(id);
 
-const startScreen = document.getElementById("startScreen");
-const gameOver = document.getElementById("gameOver");
-const tapHint = document.getElementById("tapHint");
-const pauseIndicator = document.getElementById("pauseIndicator");
-const flash = document.getElementById("flash");
+const scoreEl = $("score");
+const bestScoreEl = $("bestScore");
+const runScoreEl = $("runScore");
+const comboEl = $("combo");
+const speedValueEl = $("speedValue");
+const gateCountEl = $("gateCount");
+const shardCountEl = $("shardCount");
+const shieldIndicator = $("shieldIndicator");
 
-const startButton = document.getElementById("startButton");
-const retryButton = document.getElementById("retryButton");
-const pauseButton = document.getElementById("pauseButton");
-const restartButton = document.getElementById("restartButton");
-const shareButton = document.getElementById("shareButton");
+const startScreen = $("startScreen");
+const gameOver = $("gameOver");
+const tapHint = $("tapHint");
+const pauseIndicator = $("pauseIndicator");
+const flash = $("flash");
 
-const finalScore = document.getElementById("finalScore");
-const finalGates = document.getElementById("finalGates");
-const finalShards = document.getElementById("finalShards");
-const finalCombo = document.getElementById("finalCombo");
-const finalBest = document.getElementById("finalBest");
+const startButton = $("startButton");
+const retryButton = $("retryButton");
+const pauseButton = $("pauseButton");
+const restartButton = $("restartButton");
+const shareButton = $("shareButton");
 
-let DPR = 1;
-let width = 0;
-let height = 0;
+const finalScore = $("finalScore");
+const finalGates = $("finalGates");
+const finalShards = $("finalShards");
+const finalCombo = $("finalCombo");
+const finalBest = $("finalBest");
 
-let animationFrame = 0;
-let lastTime = 0;
+const STORAGE_KEY = "pulsewing-best-v2";
 
-const STORAGE_KEY = "pulsewing-best-v1";
+const CONFIG = Object.freeze({
+  gravity: 1420,
+  flapVelocity: -455,
 
-const CONFIG = {
-  gravity: 1450,
-  flapVelocity: -440,
-  playerX: 0.28,
+  playerXRatio: 0.28,
   playerRadius: 13,
 
-  baseSpeed: 185,
-  maxSpeed: 390,
+  baseSpeed: 190,
+  maxSpeed: 400,
 
-  gateWidth: 58,
-  startingGap: 168,
-  minimumGap: 105,
+  gateWidth: 62,
 
-  spawnDistance: 330,
+  startGap: 175,
+  minGap: 108,
 
-  shardRadius: 5,
+  minSpawnDistance: 250,
+  maxSpawnDistance: 340,
 
-  shieldDuration: 6,
+  shieldDuration: 6
+});
 
-  fixedStep: 1 / 120
-};
+let dpr = 1;
+let width = 320;
+let height = 420;
+
+let lastTime = 0;
+let animationFrame = 0;
+
+let bestScore = Number(
+  localStorage.getItem(STORAGE_KEY) || 0
+);
 
 const game = {
   state: "menu",
 
   time: 0,
+
   score: 0,
-  gates: 0,
-  shards: 0,
+
+  // IMPORTANT:
+  // gates is ONLY the array of active gates.
+  gates: [],
+
+  // counters are stored separately.
+  gatesCleared: 0,
+  shardsCollected: 0,
 
   combo: 1,
   comboTimer: 0,
@@ -91,10 +92,12 @@ const game = {
 
   shield: 0,
 
-  seed: 182736,
   difficulty: 0,
 
-  cameraX: 0,
+  seed: 0x7ab42d1,
+
+  particles: [],
+  stars: [],
 
   player: {
     x: 0,
@@ -102,25 +105,20 @@ const game = {
     vy: 0,
     rotation: 0,
     pulse: 0
-  },
-
-  gates: [],
-  particles: [],
-  stars: [],
-
-  nextGateX: 0
+  }
 };
 
-let bestScore = Number(localStorage.getItem(STORAGE_KEY) || 0);
-bestScoreEl.textContent = bestScore;
+bestScoreEl.textContent = String(bestScore);
 
 
-/* -------------------------------------------------------
-   Deterministic random generator
-------------------------------------------------------- */
+/* ======================================================
+   RANDOM
+====================================================== */
 
 function random() {
-  game.seed = (game.seed * 1664525 + 1013904223) >>> 0;
+  game.seed =
+    (game.seed * 1664525 + 1013904223) >>> 0;
+
   return game.seed / 4294967296;
 }
 
@@ -128,503 +126,975 @@ function randomRange(min, max) {
   return min + random() * (max - min);
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
 
-/* -------------------------------------------------------
-   Canvas
-------------------------------------------------------- */
+
+/* ======================================================
+   CANVAS
+====================================================== */
 
 function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
+  const rect =
+    canvas.getBoundingClientRect();
 
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  dpr =
+    Math.min(
+      window.devicePixelRatio || 1,
+      2
+    );
 
-  width = Math.max(320, rect.width);
-  height = Math.max(420, rect.height);
+  width =
+    Math.max(
+      320,
+      rect.width || window.innerWidth
+    );
 
-  canvas.width = Math.floor(width * DPR);
-  canvas.height = Math.floor(height * DPR);
+  height =
+    Math.max(
+      420,
+      rect.height ||
+        window.innerHeight - 120
+    );
 
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  canvas.width =
+    Math.floor(width * dpr);
+
+  canvas.height =
+    Math.floor(height * dpr);
+
+  ctx.setTransform(
+    dpr,
+    0,
+    0,
+    dpr,
+    0,
+    0
+  );
 
   createStars();
 
   if (game.state === "menu") {
-    resetWorld(false);
+    placePlayerForMenu();
+  } else {
+    game.player.x =
+      width * CONFIG.playerXRatio;
+
+    game.player.y =
+      clamp(
+        game.player.y,
+        20,
+        height - 20
+      );
   }
 }
 
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener(
+  "resize",
+  resizeCanvas
+);
 
 
-/* -------------------------------------------------------
-   Background stars
-------------------------------------------------------- */
+/* ======================================================
+   STARS
+====================================================== */
 
 function createStars() {
   game.stars.length = 0;
 
-  const count = Math.floor((width * height) / 9000);
+  const count =
+    Math.max(
+      35,
+      Math.floor(
+        (width * height) / 7000
+      )
+    );
 
   for (let i = 0; i < count; i++) {
     game.stars.push({
       x: randomRange(0, width),
       y: randomRange(0, height),
-      size: randomRange(0.5, 1.8),
-      depth: randomRange(0.2, 1)
+      size: randomRange(0.6, 1.8),
+      depth: randomRange(0.15, 0.9)
     });
   }
 }
 
 
-/* -------------------------------------------------------
-   Reset
-------------------------------------------------------- */
+/* ======================================================
+   PLAYER MENU POSITION
+====================================================== */
 
-function resetWorld(starting = true) {
+function placePlayerForMenu() {
+  game.player.x =
+    width * CONFIG.playerXRatio;
+
+  game.player.y =
+    height * 0.48;
+
+  game.player.vy = 0;
+  game.player.rotation = 0;
+  game.player.pulse = 0;
+}
+
+
+/* ======================================================
+   RESET
+====================================================== */
+
+function resetGame(seed = null) {
+
+  if (
+    seed !== null &&
+    Number.isFinite(Number(seed))
+  ) {
+    game.seed =
+      Number(seed) >>> 0;
+  } else {
+    game.seed =
+      (
+        Date.now() ^
+        Math.floor(
+          Math.random() *
+          0xffffffff
+        )
+      ) >>> 0;
+  }
+
   game.time = 0;
+
   game.score = 0;
-  game.gates = 0;
-  game.shards = 0;
+
+  game.gates.length = 0;
+
+  game.gatesCleared = 0;
+
+  game.shardsCollected = 0;
 
   game.combo = 1;
+
   game.comboTimer = 0;
 
-  game.speed = CONFIG.baseSpeed;
+  game.speed =
+    CONFIG.baseSpeed;
+
   game.shield = 0;
 
   game.difficulty = 0;
 
-  game.gates.length = 0;
   game.particles.length = 0;
 
-  game.cameraX = 0;
+  game.player.x =
+    width * CONFIG.playerXRatio;
 
-  game.player.x = width * CONFIG.playerX;
-  game.player.y = height * 0.48;
+  game.player.y =
+    height * 0.48;
+
   game.player.vy = 0;
+
   game.player.rotation = 0;
+
   game.player.pulse = 0;
 
-  game.nextGateX = width + 180;
 
   /*
-    Generate enough gates ahead of the player.
+    Generate the initial runway.
   */
-  while (game.nextGateX < width + 1500) {
-    spawnGate();
-  }
 
-  updateHUD();
+  let x =
+    width + 180;
 
-  if (starting) {
-    tapHint.classList.remove("hidden");
+  for (let i = 0; i < 7; i++) {
+
+    createGateAt(x);
+
+    x +=
+      randomRange(
+        CONFIG.minSpawnDistance,
+        CONFIG.maxSpawnDistance
+      );
   }
 }
 
 
-/* -------------------------------------------------------
-   Gate generation
-------------------------------------------------------- */
+/* ======================================================
+   GAP
+====================================================== */
 
-function spawnGate() {
-  const difficulty = Math.min(1, game.difficulty);
+function getCurrentGap() {
 
-  const gap = Math.max(
-    CONFIG.minimumGap,
-    CONFIG.startingGap - difficulty * 55
+  return Math.max(
+    CONFIG.minGap,
+
+    CONFIG.startGap -
+      game.difficulty *
+        (
+          CONFIG.startGap -
+          CONFIG.minGap
+        )
   );
+}
 
-  const margin = 60 + gap / 2;
 
-  const center = randomRange(
-    margin,
-    height - margin
-  );
+/* ======================================================
+   GATE CREATION
+====================================================== */
 
-  const typeRoll = random();
+function createGateAt(x) {
 
-  let type = "normal";
+  const gap =
+    getCurrentGap();
 
-  if (game.gates.length > 5 && typeRoll < 0.24) {
+  const margin =
+    55 + gap / 2;
+
+  const center =
+    randomRange(
+      margin,
+      height - margin
+    );
+
+  const roll =
+    random();
+
+  let type =
+    "normal";
+
+  if (
+    game.time > 7 &&
+    roll < 0.22
+  ) {
     type = "moving";
-  } else if (game.gates.length > 12 && typeRoll < 0.38) {
-    type = "split";
   }
 
-  const gate = {
-    x: game.nextGateX,
-    width: CONFIG.gateWidth,
-    center,
+  else if (
+    game.time > 20 &&
+    roll >= 0.22 &&
+    roll < 0.34
+  ) {
+    type = "pulse";
+  }
+
+  game.gates.push({
+
+    x,
+
+    width:
+      CONFIG.gateWidth,
+
+    baseCenter:
+      center,
+
     gap,
 
     type,
 
-    phase: randomRange(0, Math.PI * 2),
-    amplitude: randomRange(20, 50),
+    phase:
+      randomRange(
+        0,
+        Math.PI * 2
+      ),
+
+    amplitude:
+      randomRange(
+        20,
+        48
+      ),
 
     passed: false,
-    shardCollected: false,
 
-    shard: {
-      x: game.nextGateX + CONFIG.gateWidth / 2,
-      y: center + randomRange(-gap * 0.22, gap * 0.22),
-      collected: false
-    }
-  };
-
-  game.gates.push(gate);
-
-  const spacing = randomRange(225, 340);
-
-  game.nextGateX += spacing;
+    shardCollected: false
+  });
 }
 
 
-/* -------------------------------------------------------
-   Game loop
-------------------------------------------------------- */
+/* ======================================================
+   DYNAMIC GATE CENTER
+====================================================== */
 
-function loop(timestamp) {
-  if (!lastTime) {
-    lastTime = timestamp;
+function getGateCenter(gate) {
+
+  if (gate.type === "moving") {
+
+    return clamp(
+
+      gate.baseCenter +
+
+        Math.sin(
+          game.time * 1.7 +
+          gate.phase
+        ) *
+          gate.amplitude,
+
+      gate.gap / 2 + 20,
+
+      height -
+        gate.gap / 2 -
+        20
+    );
   }
 
-  let dt = (timestamp - lastTime) / 1000;
 
-  lastTime = timestamp;
+  if (gate.type === "pulse") {
 
-  dt = Math.min(dt, 0.04);
+    return clamp(
 
-  if (game.state === "playing") {
-    update(dt);
+      gate.baseCenter +
+
+        Math.sin(
+          game.time * 3 +
+          gate.phase
+        ) *
+          14,
+
+      gate.gap / 2 + 20,
+
+      height -
+        gate.gap / 2 -
+        20
+    );
   }
 
-  render();
 
-  animationFrame = requestAnimationFrame(loop);
+  return gate.baseCenter;
 }
 
 
-/* -------------------------------------------------------
-   Update
-------------------------------------------------------- */
+/* ======================================================
+   UPDATE
+====================================================== */
 
 function update(dt) {
+
   game.time += dt;
 
-  game.difficulty = Math.min(
-    1,
-    game.time / 80
-  );
-
-  game.speed = Math.min(
-    CONFIG.maxSpeed,
-    CONFIG.baseSpeed + game.time * 3.4
-  );
-
-  game.cameraX += game.speed * dt;
 
   /*
-    Player physics.
+    Difficulty ramps continuously.
   */
-  game.player.vy += CONFIG.gravity * dt;
-  game.player.y += game.player.vy * dt;
 
-  game.player.rotation =
-    Math.max(
-      -0.55,
-      Math.min(
-        1.1,
-        game.player.vy / 650
-      )
+  game.difficulty =
+    clamp(
+      game.time / 90,
+      0,
+      1
     );
 
-  game.player.pulse = Math.max(
-    0,
-    game.player.pulse - dt * 5
-  );
 
   /*
-    Shield timer.
+    Speed ramps continuously.
   */
+
+  game.speed =
+    Math.min(
+      CONFIG.maxSpeed,
+
+      CONFIG.baseSpeed +
+        game.time * 3.15
+    );
+
+
+  /*
+    PLAYER PHYSICS
+  */
+
+  game.player.vy +=
+    CONFIG.gravity * dt;
+
+  game.player.y +=
+    game.player.vy * dt;
+
+  game.player.rotation =
+    clamp(
+      game.player.vy / 650,
+      -0.6,
+      1.05
+    );
+
+  game.player.pulse =
+    Math.max(
+      0,
+      game.player.pulse -
+        dt * 4.8
+    );
+
+
+  /*
+    SHIELD
+  */
+
   if (game.shield > 0) {
-    game.shield -= dt;
 
-    if (game.shield <= 0) {
-      game.shield = 0;
-    }
+    game.shield =
+      Math.max(
+        0,
+        game.shield - dt
+      );
   }
 
-  /*
-    Move gates.
-  */
-  for (const gate of game.gates) {
-    gate.x -= game.speed * dt;
-
-    if (gate.type === "moving") {
-      gate.currentCenter =
-        gate.center +
-        Math.sin(
-          game.time * 1.8 + gate.phase
-        ) *
-        gate.amplitude;
-    } else {
-      gate.currentCenter = gate.center;
-    }
-
-    gate.shard.x =
-      gate.x + gate.width / 2;
-
-    gate.shard.y =
-      gate.currentCenter +
-      Math.sin(
-        game.time * 3 + gate.phase
-      ) *
-      Math.min(24, gate.gap * 0.18);
-
-    checkGate(gate);
-    checkShard(gate);
-  }
 
   /*
-    Remove old gates.
+    MOVE GATES
   */
-  while (
-    game.gates.length &&
-    game.gates[0].x < -100
+
+  for (
+    const gate of game.gates
   ) {
+
+    gate.x -=
+      game.speed * dt;
+
+    handleGateCollision(
+      gate
+    );
+
+    handleShard(
+      gate
+    );
+
+    if (
+      game.state !==
+      "playing"
+    ) {
+      break;
+    }
+  }
+
+
+  /*
+    ALWAYS MAINTAIN
+    A RUNWAY AHEAD.
+  */
+
+  let rightmost =
+    game.gates.length > 0
+      ? game.gates[
+          game.gates.length - 1
+        ].x
+      : width;
+
+  while (
+    rightmost <
+    width + 900
+  ) {
+
+    rightmost +=
+      randomRange(
+        CONFIG.minSpawnDistance,
+        CONFIG.maxSpawnDistance
+      );
+
+    createGateAt(
+      rightmost
+    );
+  }
+
+
+  /*
+    DELETE OLD GATES
+  */
+
+  while (
+    game.gates.length > 0 &&
+
+    game.gates[0].x +
+      game.gates[0].width <
+      -100
+  ) {
+
     game.gates.shift();
   }
 
-  /*
-    Keep generating.
-  */
-  while (
-    game.nextGateX <
-    game.cameraX + width + 1000
-  ) {
-    spawnGate();
-  }
 
   /*
-    Combo decays if player doesn't
-    collect anything.
+    COMBO
   */
-  if (game.comboTimer > 0) {
-    game.comboTimer -= dt;
-  } else {
-    game.combo = Math.max(
-      1,
-      game.combo - dt * 0.4
-    );
-  }
 
-  /*
-    World bounds.
-  */
   if (
-    game.player.y < -30 ||
-    game.player.y > height + 30
+    game.comboTimer > 0
   ) {
+
+    game.comboTimer -= dt;
+
+  } else {
+
+    game.combo =
+      Math.max(
+        1,
+        game.combo -
+          dt * 0.55
+      );
+  }
+
+
+  /*
+    WORLD BOUNDS
+  */
+
+  if (
+    game.player.y < -40 ||
+    game.player.y >
+      height + 40
+  ) {
+
     crash();
   }
 
+
   updateParticles(dt);
+
   updateHUD();
 }
 
 
-/* -------------------------------------------------------
-   Gate collision
-------------------------------------------------------- */
+/* ======================================================
+   COLLISION
+====================================================== */
 
-function checkGate(gate) {
-  const px = game.player.x;
-  const py = game.player.y;
-  const r = CONFIG.playerRadius;
+function handleGateCollision(
+  gate
+) {
 
-  const gateRight =
-    gate.x + gate.width;
+  if (
+    game.state !==
+    "playing"
+  ) {
+    return;
+  }
+
+  const px =
+    game.player.x;
+
+  const py =
+    game.player.y;
+
+  const radius =
+    CONFIG.playerRadius;
+
+  const center =
+    getGateCenter(
+      gate
+    );
+
+  const halfGap =
+    gate.gap / 2;
+
+  const top =
+    center - halfGap;
+
+  const bottom =
+    center + halfGap;
+
 
   /*
-    Only test collision while
-    player overlaps gate horizontally.
+    Successful crossing.
   */
+
   if (
-    px + r < gate.x ||
-    px - r > gateRight
+    !gate.passed &&
+
+    px >
+      gate.x +
+      gate.width
   ) {
-    /*
-      Count successful pass.
-    */
-    if (
-      !gate.passed &&
-      px > gateRight
-    ) {
-      gate.passed = true;
-      passGate(gate);
-    }
+
+    gate.passed = true;
+
+    passGate();
 
     return;
   }
 
-  const center = gate.currentCenter;
-  const halfGap = gate.gap / 2;
 
-  const topEdge = center - halfGap;
-  const bottomEdge = center + halfGap;
+  /*
+    Horizontal overlap.
+  */
 
-  const touchingTop =
-    py - r < topEdge;
+  const overlap =
+    px + radius >
+      gate.x &&
 
-  const touchingBottom =
-    py + r > bottomEdge;
+    px - radius <
+      gate.x +
+      gate.width;
 
-  if (touchingTop || touchingBottom) {
+  if (!overlap) {
+    return;
+  }
+
+
+  /*
+    Vertical collision.
+  */
+
+  if (
+    py - radius < top ||
+    py + radius > bottom
+  ) {
+
+    /*
+      Shield saves us.
+    */
+
     if (game.shield > 0) {
+
       game.shield = 0;
-      createBurst(
-        game.player.x,
-        game.player.y,
-        18
-      );
-      flashScreen();
+
       gate.passed = true;
+
+      createBurst(
+        px,
+        py,
+        22
+      );
+
+      flashScreen();
+
     } else {
+
       crash();
     }
   }
 }
 
 
-function passGate(gate) {
-  game.gates++;
+/* ======================================================
+   SUCCESSFUL GATE
+====================================================== */
+
+function passGate() {
+
+  game.gatesCleared++;
 
   game.comboTimer = 2.2;
-  game.combo = Math.min(
-    12,
-    game.combo + 0.65
-  );
 
-  const earned =
-    Math.round(game.combo);
+  game.combo =
+    Math.min(
+      12,
+      game.combo + 0.7
+    );
 
-  game.score += earned;
+  game.score +=
+    Math.max(
+      1,
+      Math.floor(
+        game.combo
+      )
+    );
+
 
   /*
-    Every successful gate has a
-    small chance of dropping a shield.
+    Small chance of shield.
   */
+
   if (
-    game.gates > 4 &&
-    random() < 0.075
+    game.gatesCleared >= 5 &&
+    random() < 0.08
   ) {
-    game.shield = CONFIG.shieldDuration;
+
+    game.shield =
+      CONFIG.shieldDuration;
   }
 
+
   createBurst(
-    gate.x + gate.width,
-    gate.currentCenter,
-    9
+    game.player.x + 10,
+    game.player.y,
+    8
   );
 }
 
 
-/* -------------------------------------------------------
-   Shards
-------------------------------------------------------- */
+/* ======================================================
+   SHARDS
+====================================================== */
 
-function checkShard(gate) {
-  if (gate.shard.collected) {
+function handleShard(
+  gate
+) {
+
+  if (
+    gate.shardCollected
+  ) {
     return;
   }
 
+  const center =
+    getGateCenter(
+      gate
+    );
+
+  const shardX =
+    gate.x +
+    gate.width / 2;
+
+  const shardY =
+    center +
+
+    Math.sin(
+      game.time * 3 +
+      gate.phase
+    ) *
+
+      Math.min(
+        25,
+        gate.gap * 0.18
+      );
+
+
   const dx =
-    game.player.x - gate.shard.x;
+    game.player.x -
+    shardX;
 
   const dy =
-    game.player.y - gate.shard.y;
+    game.player.y -
+    shardY;
 
-  const distance =
-    Math.sqrt(dx * dx + dy * dy);
+  const distanceSquared =
+    dx * dx +
+    dy * dy;
 
-  if (distance < 22) {
-    gate.shard.collected = true;
 
-    game.shards++;
+  if (
+    distanceSquared <
+    28 * 28
+  ) {
 
-    game.comboTimer = 2.5;
+    gate.shardCollected =
+      true;
 
-    game.combo = Math.min(
-      12,
-      game.combo + 0.25
-    );
+    game.shardsCollected++;
 
     game.score += 3;
 
+    game.comboTimer =
+      2.5;
+
+    game.combo =
+      Math.min(
+        12,
+        game.combo + 0.3
+      );
+
     createBurst(
-      gate.shard.x,
-      gate.shard.y,
+      shardX,
+      shardY,
       12
     );
   }
 }
 
 
-/* -------------------------------------------------------
-   Pulse
-------------------------------------------------------- */
+/* ======================================================
+   PULSE
+====================================================== */
 
 function pulse() {
-  if (game.state === "menu") {
+
+  if (
+    game.state === "menu" ||
+    game.state === "gameover"
+  ) {
+
     startGame();
+
     return;
   }
 
-  if (game.state === "gameover") {
-    startGame();
+
+  if (
+    game.state !==
+    "playing"
+  ) {
     return;
   }
 
-  if (game.state !== "playing") {
-    return;
-  }
 
-  game.player.vy = CONFIG.flapVelocity;
+  game.player.vy =
+    CONFIG.flapVelocity;
+
   game.player.pulse = 1;
+
 
   createBurst(
     game.player.x - 9,
-    game.player.y + 5,
+    game.player.y + 4,
     4
   );
 }
 
 
-/* -------------------------------------------------------
-   Crash
-------------------------------------------------------- */
+/* ======================================================
+   START GAME
+====================================================== */
 
-function crash() {
-  if (game.state !== "playing") {
+function startGame() {
+
+  resetGame();
+
+  game.state =
+    "playing";
+
+
+  startScreen.classList.add(
+    "hidden"
+  );
+
+  gameOver.classList.add(
+    "hidden"
+  );
+
+  pauseIndicator.classList.add(
+    "hidden"
+  );
+
+  pauseButton.textContent =
+    "PAUSE";
+
+
+  tapHint.classList.remove(
+    "hidden"
+  );
+
+  window.setTimeout(
+    () =>
+      tapHint.classList.add(
+        "hidden"
+      ),
+    1200
+  );
+
+
+  /*
+    Initial pulse.
+  */
+
+  pulse();
+
+  updateHUD();
+}
+
+
+/* ======================================================
+   RESTART
+====================================================== */
+
+function restartGame() {
+
+  resetGame();
+
+  game.state =
+    "playing";
+
+
+  startScreen.classList.add(
+    "hidden"
+  );
+
+  gameOver.classList.add(
+    "hidden"
+  );
+
+  pauseIndicator.classList.add(
+    "hidden"
+  );
+
+  pauseButton.textContent =
+    "PAUSE";
+
+  tapHint.classList.add(
+    "hidden"
+  );
+
+
+  pulse();
+
+  updateHUD();
+}
+
+
+/* ======================================================
+   PAUSE
+====================================================== */
+
+function togglePause() {
+
+  if (
+    game.state ===
+    "playing"
+  ) {
+
+    game.state =
+      "paused";
+
+    pauseIndicator.classList.remove(
+      "hidden"
+    );
+
+    pauseButton.textContent =
+      "RESUME";
+
     return;
   }
 
-  game.state = "gameover";
+
+  if (
+    game.state ===
+    "paused"
+  ) {
+
+    game.state =
+      "playing";
+
+    pauseIndicator.classList.add(
+      "hidden"
+    );
+
+    pauseButton.textContent =
+      "PAUSE";
+  }
+}
+
+
+/* ======================================================
+   CRASH
+====================================================== */
+
+function crash() {
+
+  if (
+    game.state !==
+    "playing"
+  ) {
+    return;
+  }
+
+  game.state =
+    "gameover";
+
 
   createBurst(
     game.player.x,
     game.player.y,
-    30
+    28
   );
 
   flashScreen();
 
-  const roundedScore =
-    Math.floor(game.score);
 
-  if (roundedScore > bestScore) {
-    bestScore = roundedScore;
+  const score =
+    Math.floor(
+      game.score
+    );
+
+
+  if (
+    score > bestScore
+  ) {
+
+    bestScore =
+      score;
 
     localStorage.setItem(
       STORAGE_KEY,
@@ -632,104 +1102,99 @@ function crash() {
     );
   }
 
-  finalScore.textContent = roundedScore;
-  finalGates.textContent = game.gates;
-  finalShards.textContent = game.shards;
+
+  finalScore.textContent =
+    String(score);
+
+  finalGates.textContent =
+    String(
+      game.gatesCleared
+    );
+
+  finalShards.textContent =
+    String(
+      game.shardsCollected
+    );
+
   finalCombo.textContent =
-    "×" + Math.floor(game.combo);
-  finalBest.textContent = bestScore;
+    "×" +
+    Math.max(
+      1,
+      Math.floor(
+        game.combo
+      )
+    );
 
-  bestScoreEl.textContent = bestScore;
+  finalBest.textContent =
+    String(bestScore);
 
-  gameOver.classList.remove("hidden");
-  tapHint.classList.add("hidden");
+
+  bestScoreEl.textContent =
+    String(bestScore);
+
+
+  gameOver.classList.remove(
+    "hidden"
+  );
+
+  tapHint.classList.add(
+    "hidden"
+  );
+
 
   updateHUD();
 }
 
 
-/* -------------------------------------------------------
-   Start / restart
-------------------------------------------------------- */
-
-function startGame() {
-  gameOver.classList.add("hidden");
-  startScreen.classList.add("hidden");
-
-  game.state = "playing";
-
-  resetWorld(true);
-
-  tapHint.classList.remove("hidden");
-
-  setTimeout(() => {
-    tapHint.classList.add("hidden");
-  }, 1600);
-
-  /*
-    Initial pulse makes the first
-    interaction feel responsive.
-  */
-  pulse();
-}
-
-
-function restartGame() {
-  gameOver.classList.add("hidden");
-  startScreen.classList.add("hidden");
-
-  game.state = "playing";
-
-  resetWorld(true);
-
-  pulse();
-}
-
-
-/* -------------------------------------------------------
-   Pause
-------------------------------------------------------- */
-
-function togglePause() {
-  if (game.state === "playing") {
-    game.state = "paused";
-
-    pauseIndicator.classList.remove("hidden");
-    pauseButton.textContent = "RESUME";
-  } else if (game.state === "paused") {
-    game.state = "playing";
-
-    pauseIndicator.classList.add("hidden");
-    pauseButton.textContent = "PAUSE";
-  }
-}
-
-
-/* -------------------------------------------------------
+/* ======================================================
    HUD
-------------------------------------------------------- */
+====================================================== */
 
 function updateHUD() {
+
   scoreEl.textContent =
-    Math.floor(game.score);
-
-  runScoreEl.textContent =
-    Math.floor(game.score);
-
-  comboEl.textContent =
-    "COMBO ×" + Math.max(
-      1,
-      Math.floor(game.combo)
+    String(
+      Math.floor(
+        game.score
+      )
     );
 
+
+  runScoreEl.textContent =
+    String(
+      Math.floor(
+        game.score
+      )
+    );
+
+
+  comboEl.textContent =
+    "COMBO ×" +
+    Math.max(
+      1,
+      Math.floor(
+        game.combo
+      )
+    );
+
+
   speedValueEl.textContent =
-    (game.speed / CONFIG.baseSpeed).toFixed(1) + "×";
+    (
+      game.speed /
+      CONFIG.baseSpeed
+    ).toFixed(1) +
+    "×";
+
 
   gateCountEl.textContent =
-    game.gates + " GATES";
+    game.gatesCleared +
+    " GATES";
+
 
   shardCountEl.textContent =
-    game.shards + " SHARDS";
+    game.shardsCollected +
+    " SHARDS";
+
 
   shieldIndicator.classList.toggle(
     "active",
@@ -738,77 +1203,137 @@ function updateHUD() {
 }
 
 
-/* -------------------------------------------------------
-   Particles
-------------------------------------------------------- */
+/* ======================================================
+   PARTICLES
+====================================================== */
 
-function createBurst(x, y, amount) {
-  for (let i = 0; i < amount; i++) {
+function createBurst(
+  x,
+  y,
+  amount
+) {
+
+  for (
+    let i = 0;
+    i < amount;
+    i++
+  ) {
+
     const angle =
-      random() * Math.PI * 2;
+      random() *
+      Math.PI *
+      2;
 
     const speed =
-      randomRange(30, 150);
+      randomRange(
+        35,
+        155
+      );
+
 
     game.particles.push({
+
       x,
+
       y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
 
-      life: randomRange(0.25, 0.65),
-      maxLife: 0.65,
+      vx:
+        Math.cos(angle) *
+        speed,
 
-      size: randomRange(1, 3)
+      vy:
+        Math.sin(angle) *
+        speed,
+
+      life:
+        randomRange(
+          0.22,
+          0.62
+        ),
+
+      maxLife:
+        0.62,
+
+      size:
+        randomRange(
+          1,
+          3
+        )
     });
   }
 }
 
 
 function updateParticles(dt) {
-  for (const particle of game.particles) {
-    particle.x += particle.vx * dt;
-    particle.y += particle.vy * dt;
 
-    particle.vy += 80 * dt;
+  for (
+    const particle of
+    game.particles
+  ) {
+
+    particle.x +=
+      particle.vx * dt;
+
+    particle.y +=
+      particle.vy * dt;
+
+    particle.vy +=
+      75 * dt;
 
     particle.life -= dt;
   }
 
+
   game.particles =
     game.particles.filter(
-      particle => particle.life > 0
+      (particle) =>
+        particle.life > 0
     );
 }
 
 
-/* -------------------------------------------------------
-   Rendering
-------------------------------------------------------- */
+/* ======================================================
+   RENDER
+====================================================== */
 
 function render() {
-  ctx.fillStyle = "#07111f";
-  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle =
+    "#07111f";
+
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
+
 
   drawBackground();
+
   drawGates();
+
   drawParticles();
+
   drawPlayer();
 
-  if (game.state === "gameover") {
+
+  if (
+    game.state ===
+    "gameover"
+  ) {
+
     drawDeathOverlay();
   }
 }
 
 
-/* -------------------------------------------------------
-   Background
-------------------------------------------------------- */
+/* ======================================================
+   BACKGROUND
+====================================================== */
 
 function drawBackground() {
-  /*
-    Gradient sky.
-  */
+
   const gradient =
     ctx.createLinearGradient(
       0,
@@ -816,6 +1341,7 @@ function drawBackground() {
       0,
       height
     );
+
 
   gradient.addColorStop(
     0,
@@ -832,71 +1358,117 @@ function drawBackground() {
     "#050c16"
   );
 
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle =
+    gradient;
+
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
+
 
   /*
-    Distant horizontal energy lines.
+    Energy grid.
   */
-  ctx.globalAlpha = 0.1;
 
-  for (let y = 40; y < height; y += 48) {
-    const offset =
-      (game.cameraX * 0.08) % 70;
+  ctx.globalAlpha =
+    0.1;
 
-    ctx.strokeStyle = "#62e7ff";
-    ctx.lineWidth = 1;
+  ctx.strokeStyle =
+    "#62e7ff";
+
+  ctx.lineWidth = 1;
+
+
+  for (
+    let y = 45;
+    y < height;
+    y += 48
+  ) {
 
     ctx.beginPath();
-    ctx.moveTo(-offset, y);
-    ctx.lineTo(width, y);
+
+    ctx.moveTo(
+      0,
+      y
+    );
+
+    ctx.lineTo(
+      width,
+      y
+    );
+
     ctx.stroke();
   }
+
 
   /*
     Stars.
   */
-  ctx.globalAlpha = 0.55;
 
-  for (const star of game.stars) {
+  ctx.globalAlpha =
+    0.55;
+
+
+  for (
+    const star of game.stars
+  ) {
+
+    const drift =
+      (
+        game.time *
+        game.speed *
+        star.depth *
+        0.08
+      ) %
+      (width + 20);
+
+
     const x =
-      (star.x -
-        game.cameraX *
-          star.depth *
-          0.08) %
-      width;
+      (
+        star.x -
+        drift +
+        width +
+        20
+      ) %
+      (width + 20) -
+      10;
 
-    const wrapped =
-      x < 0 ? x + width : x;
 
-    ctx.fillStyle = "#9edff0";
+    ctx.fillStyle =
+      "#9edff0";
 
-    ctx.beginPath();
-    ctx.arc(
-      wrapped,
+
+    ctx.fillRect(
+      x,
       star.y,
       star.size,
-      0,
-      Math.PI * 2
+      star.size
     );
-
-    ctx.fill();
   }
 
-  ctx.globalAlpha = 1;
+
+  ctx.globalAlpha =
+    1;
+
 
   /*
-    Lower atmospheric glow.
+    Bottom glow.
   */
+
   const glow =
     ctx.createRadialGradient(
-      width * 0.5,
+      width / 2,
       height,
       0,
-      width * 0.5,
+      width / 2,
       height,
       height * 0.8
     );
+
 
   glow.addColorStop(
     0,
@@ -908,84 +1480,153 @@ function drawBackground() {
     "rgba(98,231,255,0)"
   );
 
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle =
+    glow;
+
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
 }
 
 
-/* -------------------------------------------------------
-   Gates
-------------------------------------------------------- */
+/* ======================================================
+   GATES
+====================================================== */
 
 function drawGates() {
-  for (const gate of game.gates) {
-    const x = gate.x;
-    const w = gate.width;
+
+  for (
+    const gate of game.gates
+  ) {
 
     const center =
-      gate.currentCenter;
-
-    const gap = gate.gap;
+      getGateCenter(
+        gate
+      );
 
     const topHeight =
-      center - gap / 2;
+      center -
+      gate.gap / 2;
 
     const bottomY =
-      center + gap / 2;
+      center +
+      gate.gap / 2;
+
 
     drawGateSegment(
-      x,
+      gate.x,
       0,
-      w,
+      gate.width,
       topHeight
     );
 
+
     drawGateSegment(
-      x,
+      gate.x,
       bottomY,
-      w,
-      height - bottomY
+      gate.width,
+      height -
+        bottomY
     );
 
+
     /*
-      Gap markers.
+      Gap borders.
     */
+
     ctx.strokeStyle =
-      "rgba(98,231,255,0.16)";
+      "rgba(98,231,255,0.18)";
 
     ctx.lineWidth = 1;
 
-    ctx.setLineDash([3, 7]);
+    ctx.setLineDash([
+      3,
+      7
+    ]);
+
 
     ctx.beginPath();
-    ctx.moveTo(x, center - gap / 2);
-    ctx.lineTo(x + w, center - gap / 2);
+
+    ctx.moveTo(
+      gate.x,
+      topHeight
+    );
+
+    ctx.lineTo(
+      gate.x +
+        gate.width,
+      topHeight
+    );
+
     ctx.stroke();
 
+
     ctx.beginPath();
-    ctx.moveTo(x, center + gap / 2);
-    ctx.lineTo(x + w, center + gap / 2);
+
+    ctx.moveTo(
+      gate.x,
+      bottomY
+    );
+
+    ctx.lineTo(
+      gate.x +
+        gate.width,
+      bottomY
+    );
+
     ctx.stroke();
+
 
     ctx.setLineDash([]);
+
 
     /*
       Shard.
     */
-    if (!gate.shard.collected) {
+
+    if (
+      !gate.shardCollected
+    ) {
+
+      const shardY =
+        center +
+
+        Math.sin(
+          game.time * 3 +
+          gate.phase
+        ) *
+
+          Math.min(
+            25,
+            gate.gap * 0.18
+          );
+
+
       drawShard(
-        gate.shard.x,
-        gate.shard.y
+        gate.x +
+          gate.width / 2,
+        shardY
       );
     }
   }
 }
 
 
-function drawGateSegment(x, y, w, h) {
+function drawGateSegment(
+  x,
+  y,
+  w,
+  h
+) {
+
   if (h <= 0) {
     return;
   }
+
 
   const gradient =
     ctx.createLinearGradient(
@@ -995,13 +1636,14 @@ function drawGateSegment(x, y, w, h) {
       0
     );
 
+
   gradient.addColorStop(
     0,
     "#172c43"
   );
 
   gradient.addColorStop(
-    0.45,
+    0.43,
     "#244a67"
   );
 
@@ -1011,7 +1653,7 @@ function drawGateSegment(x, y, w, h) {
   );
 
   gradient.addColorStop(
-    0.55,
+    0.57,
     "#244a67"
   );
 
@@ -1020,14 +1662,21 @@ function drawGateSegment(x, y, w, h) {
     "#172c43"
   );
 
-  ctx.fillStyle = gradient;
-  ctx.fillRect(x, y, w, h);
 
-  /*
-    Energy edge.
-  */
+  ctx.fillStyle =
+    gradient;
+
+  ctx.fillRect(
+    x,
+    y,
+    w,
+    h
+  );
+
+
   ctx.fillStyle =
     "rgba(184,247,255,0.7)";
+
 
   ctx.fillRect(
     x + 1,
@@ -1045,79 +1694,131 @@ function drawGateSegment(x, y, w, h) {
 }
 
 
-function drawShard(x, y) {
-  const pulse =
+/* ======================================================
+   SHARD
+====================================================== */
+
+function drawShard(
+  x,
+  y
+) {
+
+  const scale =
     1 +
-    Math.sin(game.time * 7) * 0.14;
+    Math.sin(
+      game.time * 7
+    ) *
+      0.14;
+
 
   ctx.save();
 
-  ctx.translate(x, y);
-  ctx.rotate(Math.PI / 4);
-
-  ctx.shadowBlur = 14;
-  ctx.shadowColor = "#62e7ff";
-
-  ctx.fillStyle = "#62e7ff";
-
-  ctx.fillRect(
-    -5 * pulse,
-    -5 * pulse,
-    10 * pulse,
-    10 * pulse
+  ctx.translate(
+    x,
+    y
   );
 
-  ctx.fillStyle = "#d9fbff";
+  ctx.rotate(
+    Math.PI / 4
+  );
+
+
+  ctx.shadowBlur =
+    14;
+
+  ctx.shadowColor =
+    "#62e7ff";
+
+
+  ctx.fillStyle =
+    "#62e7ff";
+
+
+  const size =
+    5 * scale;
+
 
   ctx.fillRect(
-    -2 * pulse,
-    -2 * pulse,
-    4 * pulse,
-    4 * pulse
+    -size,
+    -size,
+    size * 2,
+    size * 2
   );
+
+
+  ctx.fillStyle =
+    "#d9fbff";
+
+
+  ctx.fillRect(
+    -2 * scale,
+    -2 * scale,
+    4 * scale,
+    4 * scale
+  );
+
 
   ctx.restore();
 }
 
 
-/* -------------------------------------------------------
-   Player
-------------------------------------------------------- */
+/* ======================================================
+   PLAYER
+====================================================== */
 
 function drawPlayer() {
-  const p = game.player;
+
+  const p =
+    game.player;
+
 
   ctx.save();
+
 
   ctx.translate(
     p.x,
     p.y
   );
 
-  ctx.rotate(p.rotation);
+  ctx.rotate(
+    p.rotation
+  );
+
 
   /*
     Shield.
   */
-  if (game.shield > 0) {
-    const pulse =
+
+  if (
+    game.shield > 0
+  ) {
+
+    const scale =
       1 +
-      Math.sin(game.time * 8) * 0.08;
+      Math.sin(
+        game.time * 8
+      ) *
+        0.08;
+
 
     ctx.strokeStyle =
-      "rgba(98,231,255,0.65)";
+      "rgba(98,231,255,0.68)";
 
     ctx.lineWidth = 2;
 
-    ctx.shadowBlur = 18;
-    ctx.shadowColor = "#62e7ff";
+    ctx.shadowBlur =
+      18;
+
+    ctx.shadowColor =
+      "#62e7ff";
+
 
     ctx.beginPath();
 
     ctx.arc(
       0,
       0,
-      23 * pulse,
+      23 * scale,
       0,
       Math.PI * 2
     );
@@ -1125,12 +1826,15 @@ function drawPlayer() {
     ctx.stroke();
   }
 
+
   /*
     Trail.
   */
+
   const trailLength =
     15 +
     p.pulse * 20;
+
 
   const trail =
     ctx.createLinearGradient(
@@ -1139,6 +1843,7 @@ function drawPlayer() {
       8,
       0
     );
+
 
   trail.addColorStop(
     0,
@@ -1150,41 +1855,87 @@ function drawPlayer() {
     "rgba(98,231,255,0.55)"
   );
 
-  ctx.fillStyle = trail;
+
+  ctx.fillStyle =
+    trail;
+
 
   ctx.beginPath();
-  ctx.moveTo(-trailLength, 0);
-  ctx.lineTo(5, -5);
-  ctx.lineTo(5, 5);
+
+  ctx.moveTo(
+    -trailLength,
+    0
+  );
+
+  ctx.lineTo(
+    5,
+    -5
+  );
+
+  ctx.lineTo(
+    5,
+    5
+  );
+
   ctx.closePath();
+
   ctx.fill();
+
 
   /*
-    Main pulse body.
+    Body.
   */
-  ctx.shadowBlur = 20;
-  ctx.shadowColor = "#62e7ff";
 
-  ctx.fillStyle = "#62e7ff";
+  ctx.shadowBlur =
+    20;
+
+  ctx.shadowColor =
+    "#62e7ff";
+
+  ctx.fillStyle =
+    "#62e7ff";
+
 
   ctx.beginPath();
 
-  ctx.moveTo(16, 0);
-  ctx.lineTo(-8, -11);
-  ctx.lineTo(-13, 0);
-  ctx.lineTo(-8, 11);
+  ctx.moveTo(
+    16,
+    0
+  );
+
+  ctx.lineTo(
+    -8,
+    -11
+  );
+
+  ctx.lineTo(
+    -13,
+    0
+  );
+
+  ctx.lineTo(
+    -8,
+    11
+  );
+
   ctx.closePath();
 
   ctx.fill();
+
 
   /*
     Core.
   */
-  ctx.shadowBlur = 0;
 
-  ctx.fillStyle = "#effcff";
+  ctx.shadowBlur =
+    0;
+
+  ctx.fillStyle =
+    "#effcff";
+
 
   ctx.beginPath();
+
   ctx.arc(
     1,
     0,
@@ -1192,25 +1943,32 @@ function drawPlayer() {
     0,
     Math.PI * 2
   );
+
   ctx.fill();
+
 
   ctx.restore();
 }
 
 
-/* -------------------------------------------------------
-   Particles
-------------------------------------------------------- */
+/* ======================================================
+   PARTICLES
+====================================================== */
 
 function drawParticles() {
-  for (const particle of game.particles) {
-    const alpha =
+
+  for (
+    const particle of
+    game.particles
+  ) {
+
+    ctx.globalAlpha =
       particle.life /
       particle.maxLife;
 
-    ctx.globalAlpha = alpha;
+    ctx.fillStyle =
+      "#62e7ff";
 
-    ctx.fillStyle = "#62e7ff";
 
     ctx.fillRect(
       particle.x,
@@ -1220,17 +1978,21 @@ function drawParticles() {
     );
   }
 
-  ctx.globalAlpha = 1;
+
+  ctx.globalAlpha =
+    1;
 }
 
 
-/* -------------------------------------------------------
-   Death overlay
-------------------------------------------------------- */
+/* ======================================================
+   DEATH
+====================================================== */
 
 function drawDeathOverlay() {
+
   ctx.fillStyle =
-    "rgba(255,60,110,0.04)";
+    "rgba(255,60,110,0.05)";
+
 
   ctx.fillRect(
     0,
@@ -1241,278 +2003,499 @@ function drawDeathOverlay() {
 }
 
 
-/* -------------------------------------------------------
-   Flash
-------------------------------------------------------- */
+/* ======================================================
+   FLASH
+====================================================== */
 
 function flashScreen() {
-  flash.classList.remove("active");
+
+  flash.classList.remove(
+    "active"
+  );
+
 
   /*
-    Force reflow so the animation
-    can run again.
+    Force browser reflow.
   */
+
   void flash.offsetWidth;
 
-  flash.classList.add("active");
+
+  flash.classList.add(
+    "active"
+  );
 }
 
 
-/* -------------------------------------------------------
-   Input
-------------------------------------------------------- */
+/* ======================================================
+   INPUT
+====================================================== */
 
 canvas.addEventListener(
   "pointerdown",
-  event => {
+  (event) => {
+
     event.preventDefault();
+
     pulse();
   },
-  { passive: false }
+  {
+    passive: false
+  }
 );
+
 
 window.addEventListener(
   "keydown",
-  event => {
-    if (
-      event.code === "Space" ||
-      event.code === "ArrowUp"
-    ) {
-      event.preventDefault();
-      pulse();
-    }
+  (event) => {
 
     if (
-      event.code === "KeyP" ||
-      event.code === "Escape"
+      event.code ===
+        "Space" ||
+      event.code ===
+        "ArrowUp"
     ) {
+
+      event.preventDefault();
+
+      pulse();
+
+    } else if (
+      event.code ===
+        "KeyP" ||
+      event.code ===
+        "Escape"
+    ) {
+
+      event.preventDefault();
+
       togglePause();
     }
   }
 );
 
+
+/* ======================================================
+   BUTTON EVENTS
+====================================================== */
+
 startButton.addEventListener(
   "click",
-  startGame
+  (event) => {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    startGame();
+  }
 );
+
 
 retryButton.addEventListener(
   "click",
-  restartGame
+  (event) => {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    restartGame();
+  }
 );
+
 
 restartButton.addEventListener(
   "click",
-  restartGame
+  (event) => {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    restartGame();
+  }
 );
+
 
 pauseButton.addEventListener(
   "click",
-  togglePause
+  (event) => {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    togglePause();
+  }
 );
+
 
 shareButton.addEventListener(
   "click",
-  async () => {
+  async (event) => {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+
     const text =
-      `I scored ${Math.floor(game.score)} ` +
-      `in PULSEWING with ${game.gates} gates cleared.`;
+      `I scored ${
+        Math.floor(game.score)
+      } in PULSEWING — ${
+        game.gatesCleared
+      } gates, ${
+        game.shardsCollected
+      } shards.`;
+
 
     try {
-      await navigator.clipboard.writeText(text);
 
-      shareButton.textContent =
-        "COPIED";
+      if (
+        navigator.clipboard &&
+        navigator.clipboard.writeText
+      ) {
 
-      setTimeout(() => {
+        await navigator.clipboard.writeText(
+          text
+        );
+
+        shareButton.textContent =
+          "COPIED";
+
+      } else {
+
+        window.prompt(
+          "Copy your run:",
+          text
+        );
+      }
+
+    } catch {
+
+      window.prompt(
+        "Copy your run:",
+        text
+      );
+    }
+
+
+    window.setTimeout(
+      () => {
+
         shareButton.textContent =
           "COPY RUN";
-      }, 1200);
-    } catch {
-      shareButton.textContent =
-        "COPY FAILED";
+
+      },
+      1000
+    );
+  }
+);
+
+
+/* ======================================================
+   STOP BUTTON EVENTS FROM REACHING
+   OTHER INPUT HANDLERS
+====================================================== */
+
+for (
+  const button of [
+    startButton,
+    retryButton,
+    restartButton,
+    pauseButton,
+    shareButton
+  ]
+) {
+
+  button.addEventListener(
+    "pointerdown",
+    (event) => {
+      event.stopPropagation();
+    }
+  );
+}
+
+
+/* ======================================================
+   AUTO PAUSE WHEN WINDOW LOSES FOCUS
+====================================================== */
+
+window.addEventListener(
+  "blur",
+  () => {
+
+    if (
+      game.state ===
+      "playing"
+    ) {
+
+      togglePause();
     }
   }
 );
 
 
-/* -------------------------------------------------------
-   AI-ready browser API
--------------------------------------------------------
-
-   This is NOT the AI yet.
-
-   It is the foundation that allows
-   the future evolutionary agent to
-   directly operate the game.
-
-   Observation format:
-     player position
-     velocity
-     nearest gate
-     gate gap
-     distance
-     speed
-     score
-     etc.
-
-   Actions:
-     0 = nothing
-     1 = pulse
-------------------------------------------------------- */
+/* ======================================================
+   AI API
+====================================================== */
 
 window.PulseWingAI = {
 
-  version: "1.0",
+  version: "1.1",
+
 
   getState() {
-    const nearest =
+
+    const nearestGate =
       game.gates.find(
-        gate =>
-          gate.x + gate.width >
+        (gate) =>
+          gate.x +
+            gate.width >=
           game.player.x - 20
-      );
+      ) || null;
+
 
     return {
-      version: this.version,
 
-      gameState: game.state,
+      version:
+        this.version,
+
+      gameState:
+        game.state,
+
 
       player: {
-        x: game.player.x,
-        y: game.player.y,
-        vy: game.player.vy,
-        rotation: game.player.rotation
+
+        x:
+          game.player.x,
+
+        y:
+          game.player.y,
+
+        vy:
+          game.player.vy,
+
+        rotation:
+          game.player.rotation
       },
 
-      nearestGate: nearest
-        ? {
-            x: nearest.x,
-            width: nearest.width,
-            center: nearest.currentCenter,
-            gap: nearest.gap,
-            distance:
-              nearest.x -
-              game.player.x,
-            type: nearest.type
-          }
-        : null,
 
-      score: game.score,
-      gates: game.gates,
-      shards: game.shards,
-      combo: game.combo,
+      nearestGate:
 
-      speed: game.speed,
+        nearestGate
+          ? {
 
-      shield: game.shield,
+              x:
+                nearestGate.x,
 
-      time: game.time,
+              width:
+                nearestGate.width,
 
-      difficulty: game.difficulty
+              center:
+                getGateCenter(
+                  nearestGate
+                ),
+
+              gap:
+                nearestGate.gap,
+
+              distance:
+                nearestGate.x -
+                game.player.x,
+
+              type:
+                nearestGate.type
+
+            }
+          : null,
+
+
+      score:
+        Math.floor(
+          game.score
+        ),
+
+
+      gatesCleared:
+        game.gatesCleared,
+
+
+      shardsCollected:
+        game.shardsCollected,
+
+
+      combo:
+        game.combo,
+
+
+      speed:
+        game.speed,
+
+
+      shield:
+        game.shield,
+
+
+      time:
+        game.time,
+
+
+      difficulty:
+        game.difficulty
     };
   },
 
+
+  /*
+    0 = nothing
+    1 = pulse
+  */
+
   step(action = 0) {
-    if (game.state !== "playing") {
+
+    if (
+      game.state !==
+      "playing"
+    ) {
+
       return this.getState();
     }
 
-    if (action === 1) {
+
+    if (
+      Number(action) === 1
+    ) {
+
       pulse();
     }
 
-    return this.getState();
-  },
-
-  reset(seed = null) {
-    if (seed !== null) {
-      game.seed =
-        Number(seed) >>> 0;
-    }
-
-    game.state = "playing";
-
-    resetWorld(true);
 
     return this.getState();
   },
+
 
   pulse() {
+
     pulse();
+
+    return this.getState();
+  },
+
+
+  reset(seed = null) {
+
+    resetGame(
+      seed
+    );
+
+
+    game.state =
+      "playing";
+
+
+    startScreen.classList.add(
+      "hidden"
+    );
+
+    gameOver.classList.add(
+      "hidden"
+    );
+
+    pauseIndicator.classList.add(
+      "hidden"
+    );
+
+    pauseButton.textContent =
+      "PAUSE";
+
+
     return this.getState();
   }
 };
 
 
-/* -------------------------------------------------------
-   BroadcastChannel AI bridge
+/* ======================================================
+   BROADCAST CHANNEL
+====================================================== */
 
-   This allows another browser tab or
-   local AI process connected through
-   a browser bridge to communicate with
-   the game without a server.
-------------------------------------------------------- */
+if (
+  "BroadcastChannel" in window
+) {
 
-if ("BroadcastChannel" in window) {
-  const aiChannel =
+  const channel =
     new BroadcastChannel(
       "pulsewing-ai-v1"
     );
 
-  aiChannel.addEventListener(
+
+  channel.addEventListener(
     "message",
-    event => {
+    (event) => {
+
       const message =
         event.data || {};
+
 
       if (
         message.type ===
         "pulsewing:get-state"
       ) {
-        aiChannel.postMessage({
+
+        channel.postMessage({
+
           type:
             "pulsewing:state",
+
           requestId:
-            message.requestId || null,
+            message.requestId ||
+            null,
+
           state:
             window.PulseWingAI.getState()
         });
+
       }
 
-      if (
+
+      else if (
         message.type ===
         "pulsewing:action"
       ) {
-        const state =
-          window.PulseWingAI.step(
-            Number(message.action) || 0
-          );
 
-        aiChannel.postMessage({
+        channel.postMessage({
+
           type:
             "pulsewing:state",
+
           requestId:
-            message.requestId || null,
-          state
+            message.requestId ||
+            null,
+
+          state:
+            window.PulseWingAI.step(
+              message.action
+            )
         });
+
       }
 
-      if (
+
+      else if (
         message.type ===
         "pulsewing:reset"
       ) {
-        const state =
-          window.PulseWingAI.reset(
-            message.seed ?? null
-          );
 
-        aiChannel.postMessage({
+        channel.postMessage({
+
           type:
             "pulsewing:state",
+
           requestId:
-            message.requestId || null,
-          state
+            message.requestId ||
+            null,
+
+          state:
+            window.PulseWingAI.reset(
+              message.seed ??
+              null
+            )
         });
       }
     }
@@ -1520,14 +2503,68 @@ if ("BroadcastChannel" in window) {
 }
 
 
-/* -------------------------------------------------------
-   Initialisation
-------------------------------------------------------- */
+/* ======================================================
+   MAIN LOOP
+====================================================== */
+
+function loop(timestamp) {
+
+  if (!lastTime) {
+    lastTime =
+      timestamp;
+  }
+
+
+  const dt =
+    Math.min(
+      (timestamp -
+        lastTime) /
+        1000,
+      0.04
+    );
+
+
+  lastTime =
+    timestamp;
+
+
+  if (
+    game.state ===
+    "playing"
+  ) {
+
+    update(dt);
+  }
+
+
+  render();
+
+
+  animationFrame =
+    requestAnimationFrame(
+      loop
+    );
+}
+
+
+/* ======================================================
+   INITIALIZE
+====================================================== */
 
 resizeCanvas();
 
-resetWorld(false);
+resetGame(
+  0x7ab42d1
+);
+
+game.state =
+  "menu";
+
+placePlayerForMenu();
+
+updateHUD();
 
 animationFrame =
-  requestAnimationFrame(loop);
- 
+  requestAnimationFrame(
+    loop
+  );
