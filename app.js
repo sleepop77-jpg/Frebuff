@@ -2330,7 +2330,10 @@ window.PulseWingAI = {
 
 
       shield:
-        game.shield,
+game.shield,
+
+invulnerable:
+game.invulnerable,
 
 
       time:
