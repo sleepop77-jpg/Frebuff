@@ -1,690 +1,333 @@
-"use strict";
-
-/*
-=========================================================
- PULSE LAB
- Evolutionary AI system for PULSEWING
-
- 20 neural agents
- -> simulation
- -> fitness
- -> selection
- -> crossover
- -> mutation
- -> next generation
-=========================================================
-*/
-
 (() => {
+  "use strict";
 
-  /* =====================================================
-     CONFIG
-  ===================================================== */
+  /*
+    PULSE LAB
+    Evolutionary AI laboratory for PULSEWING.
+
+    Client-side only.
+    GitHub Pages compatible.
+  */
 
   const CONFIG = {
-
-    population: 20,
-
-    eliteCount: 4,
+    population: 24,
+    eliteCount: 5,
 
     mutationRate: 0.12,
-
-    mutationStrength: 0.38,
+    mutationStrength: 0.35,
 
     simulationHz: 30,
-
-    maxSteps:
-      30 * 60 * 3,
+    maxSteps: 5400,
 
     gravity: 1420,
-
-    flapVelocity: -455,
+    pulseVelocity: -455,
 
     baseSpeed: 190,
-
-    maxSpeed: 400,
-
-    playerRadius: 13,
-
-    gateWidth: 62,
+    maxSpeed: 410,
 
     startGap: 175,
-
     minGap: 108,
 
-    minSpawnDistance: 250,
-
-    maxSpawnDistance: 340,
-
-    /*
-      How much work the browser performs
-      per animation frame.
-    */
-
-    stepsPerFrame: 5
+    gateSpacingMin: 230,
+    gateSpacingMax: 330
   };
-
-
-  /* =====================================================
-     STATE
-  ===================================================== */
 
   const lab = {
-
-    open: false,
-
+    generation: 1,
     running: false,
+    paused: false,
 
-    generation: 0,
+    speedMultiplier: 1,
 
-    step: 0,
-
-    population: [],
-
-    bestEver: null,
-
-    generationBest: null,
-
-    generationAverage: 0,
-
+    agents: [],
     history: [],
 
-    seed: 0x51a7e,
+    bestEver: null,
+    generationBest: null,
 
-    selectedAgent: 0,
+    seed: 918273,
 
-    speedMode: 1
+    ui: {},
+    animationFrame: null
   };
 
-
-  /* =====================================================
+  /* =========================================================
      RANDOM
-  ===================================================== */
+  ========================================================= */
 
   function random() {
+    lab.seed |= 0;
+    lab.seed = (lab.seed + 0x6D2B79F5) | 0;
 
-    lab.seed =
-      (
-        lab.seed *
-        1664525 +
-        1013904223
-      ) >>> 0;
+    let t = lab.seed;
 
-    return lab.seed / 4294967296;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
-
-  function randomRange(min, max) {
-
-    return (
-      min +
-      random() *
-      (max - min)
-    );
+  function rand(min, max) {
+    return min + random() * (max - min);
   }
 
-
-  function gaussian() {
-
-    let u = 0;
-    let v = 0;
-
-    while (u === 0) {
-      u = random();
-    }
-
-    while (v === 0) {
-      v = random();
-    }
-
-    return Math.sqrt(
-      -2 *
-      Math.log(u)
-    ) *
-      Math.cos(
-        2 *
-        Math.PI *
-        v
-      );
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
   }
 
-
-  function clamp(value, min, max) {
-
-    return Math.max(
-      min,
-      Math.min(max, value)
-    );
-  }
-
-
-  /* =====================================================
-     NEURAL NETWORK
-     
-     6 inputs
-       ↓
-     8 hidden neurons
-       ↓
-     1 output
-
-     Inputs:
-       playerY
-       velocityY
-       gateDistance
-       gateCenter
-       gapSize
-       speed
-  ===================================================== */
+  /* =========================================================
+     BRAIN
+  ========================================================= */
 
   class Brain {
+    constructor(inputCount = 6, hiddenCount = 8) {
+      this.inputCount = inputCount;
+      this.hiddenCount = hiddenCount;
 
-    constructor() {
+      this.w1 = Array.from(
+        { length: hiddenCount },
+        () =>
+          Array.from(
+            { length: inputCount },
+            () => rand(-1, 1)
+          )
+      );
 
-      this.inputSize = 6;
+      this.b1 = Array.from(
+        { length: hiddenCount },
+        () => rand(-1, 1)
+      );
 
-      this.hiddenSize = 8;
+      this.w2 = Array.from(
+        { length: hiddenCount },
+        () => rand(-1, 1)
+      );
 
-      this.weights1 =
-        Array.from(
-          {
-            length:
-              this.inputSize *
-              this.hiddenSize
-          },
-          () =>
-            gaussian() * 0.8
-        );
-
-
-      this.bias1 =
-        Array.from(
-          {
-            length:
-              this.hiddenSize
-          },
-          () =>
-            gaussian() * 0.2
-        );
-
-
-      this.weights2 =
-        Array.from(
-          {
-            length:
-              this.hiddenSize
-          },
-          () =>
-            gaussian() * 0.8
-        );
-
-
-      this.bias2 =
-        gaussian() * 0.2;
+      this.b2 = rand(-1, 1);
     }
-
 
     clone() {
+      const b = Object.create(Brain.prototype);
 
-      const copy =
-        new Brain();
+      b.inputCount = this.inputCount;
+      b.hiddenCount = this.hiddenCount;
 
+      b.w1 = this.w1.map(row => [...row]);
+      b.b1 = [...this.b1];
 
-      copy.weights1 =
-        [...this.weights1];
+      b.w2 = [...this.w2];
+      b.b2 = this.b2;
 
-      copy.bias1 =
-        [...this.bias1];
-
-      copy.weights2 =
-        [...this.weights2];
-
-      copy.bias2 =
-        this.bias2;
-
-
-      return copy;
+      return b;
     }
 
+    predict(inputs) {
+      const hidden = new Array(this.hiddenCount);
 
-    activate(inputs) {
+      for (let i = 0; i < this.hiddenCount; i++) {
+        let sum = this.b1[i];
 
-      const hidden =
-        new Array(
-          this.hiddenSize
-        );
-
-
-      for (
-        let h = 0;
-        h < this.hiddenSize;
-        h++
-      ) {
-
-        let sum =
-          this.bias1[h];
-
-
-        for (
-          let i = 0;
-          i < this.inputSize;
-          i++
-        ) {
-
-          sum +=
-            inputs[i] *
-            this.weights1[
-              h *
-                this.inputSize +
-              i
-            ];
+        for (let j = 0; j < this.inputCount; j++) {
+          sum += this.w1[i][j] * inputs[j];
         }
 
-
-        /*
-          tanh gives the hidden layer
-          a smooth nonlinear response.
-        */
-
-        hidden[h] =
-          Math.tanh(sum);
+        hidden[i] = Math.tanh(sum);
       }
 
+      let output = this.b2;
 
-      let output =
-        this.bias2;
-
-
-      for (
-        let h = 0;
-        h < this.hiddenSize;
-        h++
-      ) {
-
-        output +=
-          hidden[h] *
-          this.weights2[h];
+      for (let i = 0; i < this.hiddenCount; i++) {
+        output += this.w2[i] * hidden[i];
       }
 
-
-      /*
-        Sigmoid gives 0 → 1.
-      */
-
-      return 1 /
-        (
-          1 +
-          Math.exp(
-            -output
-          )
-        );
+      return 1 / (1 + Math.exp(-output));
     }
 
-
-    mutate(
-      rate =
-        CONFIG.mutationRate,
-      strength =
-        CONFIG.mutationStrength
-    ) {
-
-      for (
-        let i = 0;
-        i <
-        this.weights1.length;
-        i++
-      ) {
-
-        if (
-          random() <
-          rate
-        ) {
-
-          this.weights1[i] +=
-            gaussian() *
-            strength;
+    mutate(rate = CONFIG.mutationRate, strength = CONFIG.mutationStrength) {
+      const mutateValue = value => {
+        if (random() < rate) {
+          return value + rand(-strength, strength);
         }
-      }
 
+        return value;
+      };
 
-      for (
-        let i = 0;
-        i <
-        this.bias1.length;
-        i++
-      ) {
-
-        if (
-          random() <
-          rate
-        ) {
-
-          this.bias1[i] +=
-            gaussian() *
-            strength;
+      for (let i = 0; i < this.w1.length; i++) {
+        for (let j = 0; j < this.w1[i].length; j++) {
+          this.w1[i][j] = mutateValue(this.w1[i][j]);
         }
+
+        this.b1[i] = mutateValue(this.b1[i]);
+        this.w2[i] = mutateValue(this.w2[i]);
       }
 
-
-      for (
-        let i = 0;
-        i <
-        this.weights2.length;
-        i++
-      ) {
-
-        if (
-          random() <
-          rate
-        ) {
-
-          this.weights2[i] +=
-            gaussian() *
-            strength;
-        }
-      }
-
-
-      if (
-        random() <
-        rate
-      ) {
-
-        this.bias2 +=
-          gaussian() *
-          strength;
-      }
-
+      this.b2 = mutateValue(this.b2);
 
       return this;
     }
 
+    static crossover(a, b) {
+      const child = a.clone();
 
-    static crossover(
-      a,
-      b
-    ) {
+      for (let i = 0; i < child.w1.length; i++) {
+        for (let j = 0; j < child.w1[i].length; j++) {
+          if (random() < 0.5) {
+            child.w1[i][j] = b.w1[i][j];
+          }
+        }
 
-      const child =
-        new Brain();
+        if (random() < 0.5) {
+          child.b1[i] = b.b1[i];
+        }
 
-
-      for (
-        let i = 0;
-        i <
-        child.weights1.length;
-        i++
-      ) {
-
-        child.weights1[i] =
-          random() < 0.5
-            ? a.weights1[i]
-            : b.weights1[i];
+        if (random() < 0.5) {
+          child.w2[i] = b.w2[i];
+        }
       }
 
-
-      for (
-        let i = 0;
-        i <
-        child.bias1.length;
-        i++
-      ) {
-
-        child.bias1[i] =
-          random() < 0.5
-            ? a.bias1[i]
-            : b.bias1[i];
+      if (random() < 0.5) {
+        child.b2 = b.b2;
       }
-
-
-      for (
-        let i = 0;
-        i <
-        child.weights2.length;
-        i++
-      ) {
-
-        child.weights2[i] =
-          random() < 0.5
-            ? a.weights2[i]
-            : b.weights2[i];
-      }
-
-
-      child.bias2 =
-        random() < 0.5
-          ? a.bias2
-          : b.bias2;
-
 
       return child;
     }
   }
 
-
-  /* =====================================================
+  /* =========================================================
      AGENT
-  ===================================================== */
+  ========================================================= */
 
   class Agent {
-
-    constructor(
-      brain = null,
-      id = 0
-    ) {
-
-      this.id = id;
-
-      this.brain =
-        brain ||
-        new Brain();
-
+    constructor(brain = new Brain()) {
+      this.brain = brain;
 
       this.reset();
+
+      this.id =
+        "A-" +
+        Math.random()
+          .toString(36)
+          .slice(2, 7)
+          .toUpperCase();
     }
 
-
     reset() {
-
       this.y = 0.5;
-
       this.vy = 0;
 
       this.worldX = 0;
 
-      this.time = 0;
-
-      this.gates = [];
-
-      this.nextGate =
-        350;
-
+      this.speed = CONFIG.baseSpeed;
 
       this.score = 0;
-
       this.gatesCleared = 0;
-
       this.shards = 0;
-
       this.nearMisses = 0;
+      this.combo = 0;
 
       this.alive = true;
 
       this.steps = 0;
+      this.age = 0;
 
-      this.fitness = 0;
-
-      this.combo = 1;
-
-      this.comboTimer = 0;
-
-
-      this.seed =
-        (
-          lab.seed ^
-          (
-            this.id *
-            7919
-          )
-        ) >>> 0;
-
+      this.nextGateX = 260;
+      this.gates = [];
 
       this.spawnInitialGates();
     }
 
-
-    rand() {
-
-      this.seed =
-        (
-          this.seed *
-          1664525 +
-          1013904223
-        ) >>> 0;
-
-      return (
-        this.seed /
-        4294967296
-      );
-    }
-
-
     spawnInitialGates() {
+      let x = 260;
 
-      let x =
-        350;
-
-
-      for (
-        let i = 0;
-        i < 8;
-        i++
-      ) {
-
-        this.createGate(x);
-
-
-        x +=
-          250 +
-          this.rand() * 90;
+      while (x < 1800) {
+        this.spawnGate(x);
+        x += rand(
+          CONFIG.gateSpacingMin,
+          CONFIG.gateSpacingMax
+        );
       }
-
-
-      this.nextGate =
-        x;
     }
 
+    spawnGate(x) {
+      const gapSize = Math.max(
+        CONFIG.minGap,
+        CONFIG.startGap - this.age * 0.7
+      );
 
-    createGate(x) {
-
-      const gap =
-        Math.max(
-          CONFIG.minGap,
-
-          CONFIG.startGap -
-            (
-              this.time /
-              90
-            ) *
-            (
-              CONFIG.startGap -
-              CONFIG.minGap
-            )
-        );
-
-
-      const center =
-        0.16 +
-        this.rand() *
-        0.68;
-
+      const center = rand(
+        0.24 + gapSize / 900,
+        0.76 - gapSize / 900
+      );
 
       this.gates.push({
-
         x,
-
         center,
-
-        gap,
-
+        gap: gapSize,
         passed: false
       });
     }
 
-
-    nearestGate() {
-
-      for (
-        const gate of
-        this.gates
+    ensureGates() {
+      while (
+        this.nextGateX <
+        this.worldX + 1900
       ) {
+        this.spawnGate(this.nextGateX);
+
+        this.nextGateX += rand(
+          CONFIG.gateSpacingMin,
+          CONFIG.gateSpacingMax
+        );
+      }
+    }
+
+    getNearestGate() {
+      let nearest = null;
+
+      for (const gate of this.gates) {
+        if (gate.passed) continue;
 
         if (
-          gate.x >
-          this.worldX -
-          40
+          gate.x + 30 <
+          this.worldX
         ) {
+          continue;
+        }
 
-          return gate;
+        if (
+          !nearest ||
+          gate.x < nearest.x
+        ) {
+          nearest = gate;
         }
       }
 
-
-      return null;
+      return nearest;
     }
 
-
-    observation() {
-
-      const gate =
-        this.nearestGate();
-
+    observe() {
+      const gate = this.getNearestGate();
 
       if (!gate) {
-
         return [
           this.y,
-          clamp(
-            this.vy / 700,
-            -1,
-            1
-          ),
+          clamp(this.vy / 700, -1, 1),
           1,
           0.5,
-          0.5,
+          0.25,
           clamp(
-            this.speed() /
-            CONFIG.maxSpeed,
+            this.speed / CONFIG.maxSpeed,
             0,
             1
           )
         ];
       }
 
-
       const dx =
-        (
-          gate.x -
-          this.worldX
-        ) /
-        600;
-
+        (gate.x - this.worldX) / 500;
 
       return [
-
-        /*
-          Player Y
-        */
-
-        clamp(
-          this.y,
-          0,
-          1
-        ),
-
-
-        /*
-          Vertical velocity
-        */
+        clamp(this.y, 0, 1),
 
         clamp(
           this.vy / 700,
@@ -692,617 +335,290 @@
           1
         ),
 
+        clamp(dx, -1, 1),
 
-        /*
-          Gate distance
-        */
+        clamp(gate.center, 0, 1),
 
-        clamp(
-          dx,
-          -1,
-          1
-        ),
-
-
-        /*
-          Gap center
-        */
-
-        gate.center,
-
-
-        /*
-          Gap size
-        */
+        clamp(gate.gap / 400, 0, 1),
 
         clamp(
-          gate.gap /
-          220,
-          0,
-          1
-        ),
-
-
-        /*
-          Current speed
-        */
-
-        clamp(
-          this.speed() /
-          CONFIG.maxSpeed,
+          this.speed / CONFIG.maxSpeed,
           0,
           1
         )
       ];
     }
 
-
-    speed() {
-
-      return Math.min(
-
-        CONFIG.maxSpeed,
-
-        CONFIG.baseSpeed +
-        this.time * 4.2 +
-        (
-          1 -
-          Math.exp(
-            -this.time /
-            48
-          )
-        ) *
-        35
-      );
-    }
-
-
-    pulse() {
-
-      this.vy =
-        CONFIG.flapVelocity;
-    }
-
-
-    update(dt) {
-
-      if (!this.alive) {
-        return;
-      }
-
-
-      this.steps++;
-
-      this.time += dt;
-
-
-      /*
-        AI chooses an action.
-      */
-
+    think() {
       const output =
-        this.brain.activate(
-          this.observation()
+        this.brain.predict(
+          this.observe()
         );
 
+      return output > 0.5;
+    }
 
-      if (
-        output >
-        0.5
-      ) {
+    pulse() {
+      this.vy = CONFIG.pulseVelocity;
+    }
 
+    update(dt) {
+      if (!this.alive) return;
+
+      this.steps++;
+      this.age += dt;
+
+      this.speed = Math.min(
+        CONFIG.maxSpeed,
+        CONFIG.baseSpeed +
+          this.age * 7
+      );
+
+      if (this.think()) {
         this.pulse();
       }
 
-
-      /*
-        Physics.
-      */
-
-      this.vy +=
-        CONFIG.gravity *
-        dt;
-
-
+      this.vy += CONFIG.gravity * dt;
       this.y +=
-        (
-          this.vy *
-          dt
-        ) /
-        520;
-
-
-      /*
-        World moves forward.
-      */
+        (this.vy * dt) / 600;
 
       this.worldX +=
-        this.speed() *
-        dt;
+        this.speed * dt;
 
+      this.score += dt * 10;
 
-      /*
-        Generate gates.
-      */
-
-      while (
-        this.nextGate <
-        this.worldX +
-        1000
-      ) {
-
-        this.nextGate +=
-          250 +
-          this.rand() *
-          90;
-
-
-        this.createGate(
-          this.nextGate
-        );
-      }
-
+      this.ensureGates();
 
       this.checkGates();
+      this.checkCollision();
 
-
-      /*
-        Out of bounds.
-      */
-
-      if (
-        this.y < -0.08 ||
-        this.y > 1.08
-      ) {
-
+      if (this.steps >= CONFIG.maxSteps) {
         this.die();
       }
-
-
-      /*
-        Combo timeout.
-      */
-
-      if (
-        this.comboTimer > 0
-      ) {
-
-        this.comboTimer -=
-          dt;
-
-      } else {
-
-        this.combo =
-          Math.max(
-            1,
-            this.combo -
-            dt * 0.5
-          );
-      }
-
-
-      /*
-        Fitness is continuously updated,
-        so survival itself has value.
-      */
-
-      this.fitness =
-        this.time * 3 +
-
-        this.gatesCleared * 120 +
-
-        this.shards * 35 +
-
-        this.nearMisses * 50 +
-
-        this.score * 0.5;
     }
 
-
     checkGates() {
-
-      for (
-        const gate of
-        this.gates
-      ) {
-
-        if (
-          gate.passed
-        ) {
-          continue;
-        }
-
-
-        /*
-          Has the agent crossed
-          the gate?
-        */
+      for (const gate of this.gates) {
+        if (gate.passed) continue;
 
         if (
           gate.x <
           this.worldX
         ) {
-
           gate.passed = true;
-
-
-          const distance =
-            Math.abs(
-              this.y -
-              gate.center
-            );
-
-
-          /*
-            Collision.
-
-            The agent gets a little
-            tolerance around the gap.
-          */
-
-          const halfGap =
-            (
-              gate.gap /
-              2
-            ) /
-            520;
-
-
-          const safe =
-            Math.abs(
-              this.y -
-              gate.center
-            ) <
-            halfGap;
-
-
-          if (!safe) {
-
-            this.die();
-
-            return;
-          }
-
-
-          /*
-            SUCCESS
-          */
 
           this.gatesCleared++;
 
-          this.comboTimer =
-            2.5;
-
-          this.combo =
-            Math.min(
-              15,
-              this.combo +
-              0.7
-            );
-
+          this.combo++;
 
           this.score +=
-            10 *
-            Math.floor(
-              this.combo
-            );
-
-
-          /*
-            Precision bonus.
-          */
+            100 +
+            this.combo * 10;
 
           if (
-            distance <
-            gate.gap /
-            520 *
-            0.16
+            Math.abs(
+              this.y - gate.center
+            ) < 0.075
           ) {
-
-            this.score +=
-              20;
-
             this.nearMisses++;
+            this.score += 50;
           }
         }
       }
-
-
-      /*
-        Remove old gates.
-      */
 
       this.gates =
         this.gates.filter(
           gate =>
             gate.x >
-            this.worldX -
-            100
+            this.worldX - 500
         );
     }
 
-
-    die() {
+    checkCollision() {
+      const top = 0.04;
+      const bottom = 0.96;
 
       if (
-        !this.alive
+        this.y < top ||
+        this.y > bottom
       ) {
+        this.die();
         return;
       }
 
+      const gate =
+        this.getNearestGate();
 
-      this.alive =
-        false;
+      if (!gate) return;
 
+      const dx =
+        gate.x - this.worldX;
 
-      /*
-        Small survival bonus.
-      */
+      if (
+        dx > -15 &&
+        dx < 25
+      ) {
+        const halfGap =
+          gate.gap / 1200;
 
-      this.fitness +=
-        this.time * 2;
+        if (
+          Math.abs(
+            this.y - gate.center
+          ) > halfGap
+        ) {
+          this.die();
+        }
+      }
+    }
+
+    die() {
+      if (!this.alive) return;
+
+      this.alive = false;
+
+      this.fitness =
+        this.age * 3 +
+        this.gatesCleared * 120 +
+        this.shards * 35 +
+        this.nearMisses * 50 +
+        this.score * 0.5;
+    }
+
+    getFitness() {
+      return this.fitness || 0;
     }
   }
 
-
-  /* =====================================================
+  /* =========================================================
      EVOLUTION
-  ===================================================== */
+  ========================================================= */
 
   function createPopulation() {
-
-    lab.population =
-      [];
-
+    lab.agents = [];
 
     for (
       let i = 0;
-      i <
-      CONFIG.population;
+      i < CONFIG.population;
       i++
     ) {
-
-      lab.population.push(
-        new Agent(
-          null,
-          i
-        )
+      lab.agents.push(
+        new Agent()
       );
     }
   }
-
 
   function evaluateGeneration() {
-
-    const alive =
-      lab.population.filter(
-        agent =>
-          agent.alive
-      );
-
-
-    /*
-      If everybody dies, generation
-      ends immediately.
-    */
-
-    if (
-      alive.length === 0 ||
-      lab.step >=
-        CONFIG.maxSteps
-    ) {
-
-      finishGeneration();
-    }
+    return lab.agents.every(
+      agent => !agent.alive
+    );
   }
 
-
   function finishGeneration() {
+    lab.running = false;
 
-    lab.running =
-      false;
-
-
-    /*
-      Highest fitness first.
-    */
-
-    lab.population.sort(
+    lab.agents.sort(
       (a, b) =>
-        b.fitness -
-        a.fitness
+        b.getFitness() -
+        a.getFitness()
     );
 
-
-    const best =
-      lab.population[0];
-
-
     lab.generationBest =
-      best;
-
-
-    lab.generationAverage =
-      lab.population.reduce(
-        (sum, agent) =>
-          sum +
-          agent.fitness,
-        0
-      ) /
-      lab.population.length;
-
-
-    lab.history.push({
-
-      generation:
-        lab.generation,
-
-      best:
-        best.fitness,
-
-      average:
-        lab.generationAverage,
-
-      gates:
-        best.gatesCleared,
-
-      time:
-        best.time
-    });
-
+      lab.agents[0];
 
     if (
       !lab.bestEver ||
-      best.fitness >
-        lab.bestEver.fitness
+      lab.generationBest.getFitness() >
+        lab.bestEver.getFitness()
     ) {
-
       lab.bestEver =
         cloneAgent(
-          best
+          lab.generationBest
         );
     }
 
+    lab.history.push({
+      generation: lab.generation,
+      fitness:
+        lab.generationBest.getFitness(),
+      gates:
+        lab.generationBest.gatesCleared,
+      age:
+        lab.generationBest.age
+    });
 
     lab.generation++;
 
-    updateLabUI();
-
-
-    /*
-      Don't automatically breed immediately.
-
-      This gives the user a chance to
-      inspect the generation.
-    */
+    updateUI();
   }
 
-
   function cloneAgent(agent) {
-
     const clone =
       new Agent(
-        agent.brain.clone(),
-        agent.id
+        agent.brain.clone()
       );
 
-
     clone.fitness =
-      agent.fitness;
+      agent.getFitness();
 
     clone.gatesCleared =
       agent.gatesCleared;
 
-    clone.time =
-      agent.time;
+    clone.age =
+      agent.age;
 
     clone.score =
       agent.score;
 
-    clone.shards =
-      agent.shards;
-
-    clone.nearMisses =
-      agent.nearMisses;
-
-
     return clone;
   }
 
-
   function breedNextGeneration() {
-
-    /*
-      If generation hasn't been
-      evaluated, finish it first.
-    */
-
-    if (
-      lab.running
-    ) {
-      return;
-    }
-
-
-    /*
-      Make sure population has
-      fitness ordering.
-    */
-
-    lab.population.sort(
+    lab.agents.sort(
       (a, b) =>
-        b.fitness -
-        a.fitness
+        b.getFitness() -
+        a.getFitness()
     );
 
-
     const elites =
-      lab.population.slice(
-        0,
-        CONFIG.eliteCount
-      );
+      lab.agents
+        .slice(
+          0,
+          CONFIG.eliteCount
+        );
 
-
-    const next =
-      [];
-
-
-    /*
-      ELITISM
-
-      The best agents survive
-      unchanged.
-    */
+    const next = [];
 
     for (
       let i = 0;
-      i <
-      CONFIG.eliteCount;
+      i < CONFIG.eliteCount;
       i++
     ) {
-
       next.push(
-
         new Agent(
-          elites[i]
-            .brain
-            .clone(),
-
-          i
+          elites[i].brain.clone()
         )
       );
     }
-
-
-    /*
-      CHILDREN
-
-      Randomly select parents
-      from the elite group.
-    */
 
     while (
       next.length <
       CONFIG.population
     ) {
-
       const parentA =
         elites[
           Math.floor(
             random() *
-            elites.length
+              elites.length
           )
         ];
-
 
       const parentB =
         elites[
           Math.floor(
             random() *
-            elites.length
+              elites.length
           )
         ];
-
 
       const childBrain =
         Brain.crossover(
@@ -1310,1705 +626,567 @@
           parentB.brain
         );
 
-
       childBrain.mutate();
 
-
       next.push(
-
         new Agent(
-          childBrain,
-          next.length
+          childBrain
         )
       );
     }
 
+    lab.agents = next;
 
-    lab.population =
-      next;
+    lab.running = true;
 
-
-    lab.step = 0;
-
-    lab.running =
-      true;
-
-
-    updateLabUI();
+    updateUI();
   }
 
+  /* =========================================================
+     SIMULATION
+  ========================================================= */
 
-  function startEvolution() {
+  let lastTime = 0;
 
-    if (
-      lab.population.length === 0
-    ) {
-
-      lab.generation = 0;
-
-      lab.step = 0;
-
-      lab.history = [];
-
-      lab.bestEver = null;
-
-      createPopulation();
-    }
-
-
-    lab.running =
-      true;
-
-
-    updateLabUI();
-  }
-
-
-  function resetEvolution() {
-
-    lab.running =
-      false;
-
-    lab.generation =
-      0;
-
-    lab.step =
-      0;
-
-    lab.history =
-      [];
-
-    lab.bestEver =
-      null;
-
-    lab.generationBest =
-      null;
-
-    lab.population =
-      [];
-
-
-    createPopulation();
-
-    updateLabUI();
-  }
-
-
-  /* =====================================================
-     SIMULATION LOOP
-  ===================================================== */
-
-  let lastFrame =
-    performance.now();
-
-
-  function simulationLoop(now) {
-
-    const realDt =
+  function simulationLoop(time) {
+    const dt =
       Math.min(
-        (
-          now -
-          lastFrame
-        ) /
-        1000,
-        0.05
+        0.04,
+        (time - lastTime) / 1000 || 0
       );
 
+    lastTime = time;
 
-    lastFrame =
-      now;
+    if (lab.running) {
+      const steps = Math.max(
+        1,
+        Math.floor(
+          lab.speedMultiplier
+        )
+      );
 
-
-    if (
-      lab.running
-    ) {
-
-      /*
-        Multiple tiny steps per frame.
-
-        This makes the evolutionary
-        simulation much faster than
-        playing manually.
-      */
-
-      const dt =
+      const fixedDt =
         1 /
         CONFIG.simulationHz;
 
-
-      const count =
-        Math.max(
-          1,
-          Math.floor(
-            CONFIG.stepsPerFrame *
-            lab.speedMode
-          )
-        );
-
-
       for (
-        let i = 0;
-        i < count;
-        i++
+        let s = 0;
+        s < steps;
+        s++
       ) {
-
-        lab.step++;
-
-
         for (
-          const agent of
-          lab.population
+          const agent of lab.agents
         ) {
-
-          agent.update(dt);
+          if (agent.alive) {
+            agent.update(
+              fixedDt
+            );
+          }
         }
 
-
-        evaluateGeneration();
-
-
         if (
-          !lab.running
+          evaluateGeneration()
         ) {
+          finishGeneration();
           break;
         }
       }
 
-
-      updateLabUI();
+      drawPopulation();
+      updateUI();
     }
 
-
-    drawAgentPreview();
-
-
-    requestAnimationFrame(
-      simulationLoop
-    );
+    lab.animationFrame =
+      requestAnimationFrame(
+        simulationLoop
+      );
   }
 
-
-  /* =====================================================
-     UI CREATION
-  ===================================================== */
-
-  const style =
-    document.createElement(
-      "style"
-    );
-
-
-  style.textContent = `
-
-    #pulseLabButton {
-      position: fixed;
-      right: 18px;
-      bottom: 18px;
-      z-index: 9000;
-
-      border: 1px solid
-        rgba(98,231,255,.45);
-
-      background:
-        rgba(5,14,25,.92);
-
-      color: #d9fbff;
-
-      padding:
-        11px 15px;
-
-      border-radius:
-        12px;
-
-      font:
-        800 12px
-        system-ui;
-
-      letter-spacing:
-        .12em;
-
-      cursor: pointer;
-
-      box-shadow:
-        0 0 25px
-        rgba(98,231,255,.12);
-
-      backdrop-filter:
-        blur(12px);
-    }
-
-
-    #pulseLabButton:hover {
-      border-color:
-        #62e7ff;
-
-      box-shadow:
-        0 0 28px
-        rgba(98,231,255,.28);
-    }
-
-
-    #pulseLab {
-      position: fixed;
-      inset: 0;
-      z-index: 10000;
-
-      display: none;
-
-      background:
-        radial-gradient(
-          circle at 50% 0%,
-          #102b40 0%,
-          #050c16 52%,
-          #02060b 100%
-        );
-
-      color: #d9fbff;
-
-      font-family:
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        sans-serif;
-
-      overflow: auto;
-    }
-
-
-    #pulseLab.open {
-      display: block;
-    }
-
-
-    .pl-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-
-      padding:
-        18px 22px;
-
-      border-bottom:
-        1px solid
-        rgba(98,231,255,.13);
-    }
-
-
-    .pl-title {
-      font-size: 20px;
-      font-weight: 900;
-      letter-spacing: .08em;
-    }
-
-
-    .pl-subtitle {
-      margin-top: 3px;
-      color:
-        rgba(217,251,255,.52);
-
-      font-size: 11px;
-      letter-spacing: .08em;
-    }
-
-
-    .pl-close {
-      border: 0;
-      background:
-        rgba(255,255,255,.06);
-
-      color: white;
-
-      border-radius: 10px;
-
-      padding: 9px 13px;
-
-      cursor: pointer;
-    }
-
-
-    .pl-main {
-      max-width: 1150px;
-      margin: auto;
-      padding: 20px;
-    }
-
-
-    .pl-stats {
-      display: grid;
-
-      grid-template-columns:
-        repeat(4, 1fr);
-
-      gap: 10px;
-
-      margin-bottom: 14px;
-    }
-
-
-    .pl-stat {
-      padding: 14px;
-
-      background:
-        rgba(255,255,255,.035);
-
-      border:
-        1px solid
-        rgba(98,231,255,.12);
-
-      border-radius: 13px;
-    }
-
-
-    .pl-stat-label {
-      font-size: 9px;
-      letter-spacing: .15em;
-      opacity: .45;
-    }
-
-
-    .pl-stat-value {
-      margin-top: 5px;
-
-      font-size: 21px;
-      font-weight: 900;
-    }
-
-
-    .pl-controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 9px;
-
-      margin-bottom: 14px;
-    }
-
-
-    .pl-controls button {
-      border:
-        1px solid
-        rgba(98,231,255,.25);
-
-      background:
-        rgba(98,231,255,.07);
-
-      color:
-        #d9fbff;
-
-      padding:
-        10px 14px;
-
-      border-radius:
-        10px;
-
-      cursor: pointer;
-
-      font-weight:
-        800;
-    }
-
-
-    .pl-controls button:hover {
-      background:
-        rgba(98,231,255,.15);
-
-      border-color:
-        #62e7ff;
-    }
-
-
-    #plSpeed {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-
-      margin-left: auto;
-
-      color:
-        rgba(217,251,255,.6);
-
-      font-size: 11px;
-    }
-
-
-    #plSpeed button {
-      padding:
-        7px 10px;
-    }
-
-
-    .pl-grid {
-      display: grid;
-
-      grid-template-columns:
-        minmax(0, 1.7fr)
-        minmax(280px, 1fr);
-
-      gap: 14px;
-    }
-
-
-    .pl-card {
-      background:
-        rgba(255,255,255,.035);
-
-      border:
-        1px solid
-        rgba(98,231,255,.12);
-
-      border-radius: 15px;
-
-      overflow: hidden;
-    }
-
-
-    .pl-card-title {
-      padding:
-        12px 14px;
-
-      border-bottom:
-        1px solid
-        rgba(98,231,255,.08);
-
-      font-size: 10px;
-      font-weight: 900;
-      letter-spacing: .14em;
-
-      color:
-        rgba(217,251,255,.65);
-    }
-
-
-    #plPreview {
-      width: 100%;
-      height: 270px;
-
-      display: block;
-
-      background:
-        #040b13;
-    }
-
-
-    .pl-agent {
-      display: grid;
-
-      grid-template-columns:
-        42px
-        1fr
-        90px
-        75px;
-
-      gap: 8px;
-
-      align-items: center;
-
-      padding:
-        9px 12px;
-
-      border-bottom:
-        1px solid
-        rgba(255,255,255,.045);
-
-      cursor: pointer;
-    }
-
-
-    .pl-agent:hover {
-      background:
-        rgba(98,231,255,.06);
-    }
-
-
-    .pl-rank {
-      font-weight: 900;
-      opacity: .45;
-    }
-
-
-    .pl-agent-name {
-      font-weight: 800;
-      font-size: 12px;
-    }
-
-
-    .pl-bar {
-      height: 5px;
-
-      border-radius: 99px;
-
-      background:
-        rgba(255,255,255,.07);
-
-      overflow: hidden;
-    }
-
-
-    .pl-bar-fill {
-      height: 100%;
-
-      background:
-        #62e7ff;
-
-      border-radius: 99px;
-    }
-
-
-    .pl-fitness {
-      text-align: right;
-
-      font:
-        800 11px
-        monospace;
-    }
-
-
-    .pl-gates {
-      text-align: right;
-
-      font:
-        700 10px
-        monospace;
-
-      opacity: .55;
-    }
-
-
-    #plLog {
-      padding: 14px;
-
-      height: 170px;
-
-      overflow: auto;
-
-      font:
-        11px
-        monospace;
-
-      line-height: 1.7;
-
-      color:
-        rgba(217,251,255,.65);
-    }
-
-
-    .pl-best {
-      color:
-        #62e7ff;
-
-      font-weight:
-        900;
-    }
-
-
-    @media (max-width: 760px) {
-
-      .pl-stats {
-        grid-template-columns:
-          repeat(2, 1fr);
-      }
-
-
-      .pl-grid {
-        grid-template-columns:
-          1fr;
-      }
-
-
-      #plSpeed {
-        margin-left: 0;
-        width: 100%;
-      }
-    }
-
-  `;
-
-
-  document.head.appendChild(
-    style
-  );
-
-
-  /* =====================================================
-     DOM
-  ===================================================== */
-
-  const button =
-    document.createElement(
-      "button"
-    );
-
-
-  button.id =
-    "pulseLabButton";
-
-  button.textContent =
-    "⚡ AI LAB";
-
-
-  document.body.appendChild(
-    button
-  );
-
-
-  const labRoot =
-    document.createElement(
-      "div"
-    );
-
-
-  labRoot.id =
-    "pulseLab";
-
-
-  labRoot.innerHTML = `
-
-    <div class="pl-header">
-
-      <div>
-
-        <div class="pl-title">
-          PULSE LAB
-        </div>
-
-        <div class="pl-subtitle">
-          EVOLUTIONARY FLIGHT INTELLIGENCE
-        </div>
-
-      </div>
-
-
-      <button
-        class="pl-close"
-        id="plClose"
-      >
-        CLOSE
-      </button>
-
-    </div>
-
-
-    <div class="pl-main">
-
-      <div class="pl-stats">
-
-        <div class="pl-stat">
-          <div class="pl-stat-label">
-            GENERATION
-          </div>
-
-          <div
-            class="pl-stat-value"
-            id="plGeneration"
-          >
-            0
-          </div>
-        </div>
-
-
-        <div class="pl-stat">
-          <div class="pl-stat-label">
-            BEST FITNESS
-          </div>
-
-          <div
-            class="pl-stat-value"
-            id="plBest"
-          >
-            0
-          </div>
-        </div>
-
-
-        <div class="pl-stat">
-          <div class="pl-stat-label">
-            BEST GATES
-          </div>
-
-          <div
-            class="pl-stat-value"
-            id="plGates"
-          >
-            0
-          </div>
-        </div>
-
-
-        <div class="pl-stat">
-          <div class="pl-stat-label">
-            STATUS
-          </div>
-
-          <div
-            class="pl-stat-value"
-            id="plStatus"
-          >
-            READY
-          </div>
-        </div>
-
-      </div>
-
-
-      <div class="pl-controls">
-
-        <button id="plStart">
-          ▶ START EVOLUTION
-        </button>
-
-
-        <button id="plBreed">
-          🧬 BREED NEXT
-        </button>
-
-
-        <button id="plReset">
-          ↻ RESET
-        </button>
-
-
-        <div id="plSpeed">
-
-          SIM SPEED
-
-          <button
-            data-speed="1"
-          >
-            1×
-          </button>
-
-          <button
-            data-speed="3"
-          >
-            3×
-          </button>
-
-          <button
-            data-speed="8"
-          >
-            8×
-          </button>
-
-          <button
-            data-speed="20"
-          >
-            20×
-          </button>
-
-        </div>
-
-      </div>
-
-
-      <div class="pl-grid">
-
-        <div class="pl-card">
-
-          <div class="pl-card-title">
-            LIVE POPULATION
-          </div>
-
-          <canvas
-            id="plPreview"
-          ></canvas>
-
-          <div id="plAgents"></div>
-
-        </div>
-
-
-        <div>
-
-          <div class="pl-card">
-
-            <div class="pl-card-title">
-              EVOLUTION LOG
-            </div>
-
-            <div id="plLog">
-              PULSE LAB initialized.<br>
-              20 neural agents ready.
-            </div>
-
-          </div>
-
-
-          <div
-            class="pl-card"
-            style="margin-top:14px"
-          >
-
-            <div class="pl-card-title">
-              HOW IT LEARNS
-            </div>
-
-            <div
-              style="
-                padding:15px;
-                font-size:12px;
-                line-height:1.7;
-                color:rgba(217,251,255,.62)
-              "
-            >
-
-              Each agent receives six
-              observations about the world.
-
-              <br><br>
-
-              Its tiny neural network decides:
-
-              <br>
-
-              <b style="color:#62e7ff">
-                PULSE
-              </b>
-              or
-              <b style="color:#fff">
-                DON'T PULSE
-              </b>
-
-              <br><br>
-
-              Bad agents die.
-
-              Good agents reproduce.
-
-              The best brains survive unchanged.
-
-              The rest are created through
-              <b style="color:#62e7ff">
-                crossover + mutation
-              </b>.
-
-              <br><br>
-
-              No pretrained model.
-              No API.
-              No server.
-
-              <br><br>
-
-              Everything runs locally
-              inside your browser.
-
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-    </div>
-  `;
-
-
-  document.body.appendChild(
-    labRoot
-  );
-
-
-  /* =====================================================
-     UI REFERENCES
-  ===================================================== */
-
-  const closeButton =
-    document.getElementById(
-      "plClose"
-    );
-
-  const startEvolutionButton =
-    document.getElementById(
-      "plStart"
-    );
-
-  const breedButton =
-    document.getElementById(
-      "plBreed"
-    );
-
-  const resetButton =
-    document.getElementById(
-      "plReset"
-    );
-
-  const generationElement =
-    document.getElementById(
-      "plGeneration"
-    );
-
-  const bestElement =
-    document.getElementById(
-      "plBest"
-    );
-
-  const gatesElement =
-    document.getElementById(
-      "plGates"
-    );
-
-  const statusElement =
-    document.getElementById(
-      "plStatus"
-    );
-
-  const agentsElement =
-    document.getElementById(
-      "plAgents"
-    );
-
-  const logElement =
-    document.getElementById(
-      "plLog"
-    );
-
-  const preview =
-    document.getElementById(
-      "plPreview"
-    );
-
-  const previewCtx =
-    preview.getContext(
-      "2d"
-    );
-
-
-  /* =====================================================
-     OPEN / CLOSE
-  ===================================================== */
-
-  function openLab() {
-
-    lab.open =
-      true;
-
-    labRoot.classList.add(
-      "open"
-    );
-
-    /*
-      Pause the real game if possible.
-    */
-
+  /* =========================================================
+     UI
+  ========================================================= */
+
+  function createUI() {
     if (
-      window.PulseWingAI &&
-      window.PulseWingAI.getState
+      document.getElementById(
+        "pulse-lab-root"
+      )
     ) {
-
-      const state =
-        window.PulseWingAI
-          .getState();
-
-      if (
-        state.gameState ===
-        "playing"
-      ) {
-
-        const pause =
-          document.getElementById(
-            "pauseButton"
-          );
-
-        if (
-          pause &&
-          pause.textContent ===
-          "PAUSE"
-        ) {
-
-          pause.click();
-        }
-      }
+      return;
     }
 
-
-    updateLabUI();
-  }
-
-
-  function closeLab() {
-
-    lab.open =
-      false;
-
-    labRoot.classList.remove(
-      "open"
-    );
-  }
-
-
-  button.addEventListener(
-    "click",
-    openLab
-  );
-
-
-  closeButton.addEventListener(
-    "click",
-    closeLab
-  );
-
-
-  /* =====================================================
-     CONTROLS
-  ===================================================== */
-
-  startEvolutionButton.addEventListener(
-    "click",
-    () => {
-
-      if (
-        lab.running
-      ) {
-
-        lab.running =
-          false;
-
-      } else {
-
-        startEvolution();
-      }
-
-
-      updateLabUI();
-    }
-  );
-
-
-  breedButton.addEventListener(
-    "click",
-    () => {
-
-      breedNextGeneration();
-
-      log(
-        `GEN ${lab.generation}: new population bred.`
-      );
-
-      updateLabUI();
-    }
-  );
-
-
-  resetButton.addEventListener(
-    "click",
-    () => {
-
-      resetEvolution();
-
-      log(
-        "Population reset. Fresh genomes created."
-      );
-    }
-  );
-
-
-  document
-    .querySelectorAll(
-      "#plSpeed button"
-    )
-    .forEach(
-      speedButton => {
-
-        speedButton.addEventListener(
-          "click",
-          () => {
-
-            lab.speedMode =
-              Number(
-                speedButton
-                  .dataset
-                  .speed
-              );
-
-            updateLabUI();
-          }
-        );
-      }
-    );
-
-
-  /* =====================================================
-     LOG
-  ===================================================== */
-
-  function log(message) {
-
-    const line =
+    const root =
       document.createElement(
         "div"
       );
 
+    root.id =
+      "pulse-lab-root";
 
-    line.textContent =
-      `[GEN ${lab.generation}] ${message}`;
+    root.innerHTML = `
+      <button
+        id="pulse-lab-open"
+        type="button"
+      >
+        ⚡ AI LAB
+      </button>
 
+      <div
+        id="pulse-lab-overlay"
+        class="pulse-lab-hidden"
+      >
+        <div
+          id="pulse-lab-panel"
+        >
 
-    logElement.prepend(
-      line
-    );
-
-
-    while (
-      logElement.children.length >
-      40
-    ) {
-
-      logElement.lastChild
-        .remove();
-    }
-  }
-
-
-  /* =====================================================
-     UI
-  ===================================================== */
-
-  function updateLabUI() {
-
-    generationElement.textContent =
-      String(
-        lab.generation
-      );
-
-
-    const best =
-      lab.bestEver ||
-      lab.generationBest;
-
-
-    bestElement.textContent =
-      best
-        ? Math.floor(
-            best.fitness
-          )
-        : "0";
-
-
-    gatesElement.textContent =
-      best
-        ? String(
-            best.gatesCleared
-          )
-        : "0";
-
-
-    statusElement.textContent =
-      lab.running
-        ? "EVOLVING"
-        : lab.population.length === 0
-          ? "READY"
-          : "BREED";
-
-
-    startEvolutionButton.textContent =
-      lab.running
-        ? "Ⅱ PAUSE EVOLUTION"
-        : "▶ START EVOLUTION";
-
-
-    agentsElement.innerHTML =
-      "";
-
-
-    const sorted =
-      [...lab.population]
-        .sort(
-          (a, b) =>
-            b.fitness -
-            a.fitness
-        );
-
-
-    const maxFitness =
-      Math.max(
-        1,
-        ...sorted.map(
-          a =>
-            a.fitness
-        )
-      );
-
-
-    sorted.forEach(
-      (agent, index) => {
-
-        const row =
-          document.createElement(
-            "div"
-          );
-
-
-        row.className =
-          "pl-agent";
-
-
-        row.innerHTML = `
-
-          <div class="pl-rank">
-            #${index + 1}
-          </div>
-
-          <div>
-
-            <div class="pl-agent-name">
-              AGENT ${agent.id}
-              ${
-                index === 0
-                  ? " ★"
-                  : ""
-              }
-            </div>
-
-            <div class="pl-bar">
+          <div
+            class="pulse-lab-header"
+          >
+            <div>
+              <div
+                class="pulse-lab-title"
+              >
+                PULSE LAB
+              </div>
 
               <div
-                class="pl-bar-fill"
-                style="
-                  width:${
-                    (
-                      agent.fitness /
-                      maxFitness
-                    ) *
-                    100
-                  }%
-                "
-              ></div>
+                class="pulse-lab-subtitle"
+              >
+                EVOLUTIONARY AI SIMULATION
+              </div>
+            </div>
 
+            <button
+              id="pulse-lab-close"
+              type="button"
+            >
+              ×
+            </button>
+          </div>
+
+          <div
+            class="pulse-lab-stats"
+          >
+            <div>
+              <span>
+                GENERATION
+              </span>
+
+              <strong
+                id="pulse-lab-generation"
+              >
+                1
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                BEST FITNESS
+              </span>
+
+              <strong
+                id="pulse-lab-fitness"
+              >
+                0
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                BEST GATES
+              </span>
+
+              <strong
+                id="pulse-lab-gates"
+              >
+                0
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                ALIVE
+              </span>
+
+              <strong
+                id="pulse-lab-alive"
+              >
+                0
+              </strong>
+            </div>
+          </div>
+
+          <div
+            class="pulse-lab-controls"
+          >
+            <button
+              id="pulse-lab-start"
+              type="button"
+            >
+              ▶ START EVOLUTION
+            </button>
+
+            <button
+              id="pulse-lab-breed"
+              type="button"
+            >
+              🧬 BREED NEXT
+            </button>
+
+            <button
+              id="pulse-lab-reset"
+              type="button"
+            >
+              ↻ RESET
+            </button>
+          </div>
+
+          <div
+            class="pulse-lab-speed"
+          >
+            <span>
+              SIM SPEED
+            </span>
+
+            <button
+              data-speed="1"
+              type="button"
+            >
+              1×
+            </button>
+
+            <button
+              data-speed="3"
+              type="button"
+            >
+              3×
+            </button>
+
+            <button
+              data-speed="8"
+              type="button"
+            >
+              8×
+            </button>
+
+            <button
+              data-speed="20"
+              type="button"
+            >
+              20×
+            </button>
+          </div>
+
+          <canvas
+            id="pulse-lab-canvas"
+          ></canvas>
+
+          <div
+            class="pulse-lab-columns"
+          >
+
+            <div>
+              <h3>
+                AGENTS
+              </h3>
+
+              <div
+                id="pulse-lab-agents"
+              ></div>
+            </div>
+
+            <div>
+              <h3>
+                EVOLUTION LOG
+              </h3>
+
+              <div
+                id="pulse-lab-log"
+              ></div>
             </div>
 
           </div>
 
-          <div class="pl-fitness">
-            ${Math.floor(
-              agent.fitness
-            )}
+          <div
+            class="pulse-lab-info"
+          >
+            <strong>
+              HOW IT LEARNS
+            </strong>
+
+            <p>
+              Every agent receives the same
+              type of environment but starts
+              with a different neural network.
+              The agents that survive longer
+              and clear more gates receive
+              higher fitness.
+            </p>
+
+            <p>
+              The strongest brains are copied,
+              crossed together and mutated.
+              A new generation then tries again.
+            </p>
           </div>
 
-          <div class="pl-gates">
-            ${agent.gatesCleared}
-            gates
-          </div>
-        `;
+        </div>
+      </div>
+    `;
 
+    document.body.appendChild(root);
 
-        agentsElement.appendChild(
-          row
-        );
-      }
-    );
+    injectStyles();
 
+    lab.ui = {
+      root,
 
-    if (
-      lab.generationBest &&
-      lab.history.length >
-      0
-    ) {
+      overlay:
+        document.getElementById(
+          "pulse-lab-overlay"
+        ),
 
-      const previous =
-        lab.history[
-          lab.history.length - 1
-        ];
+      generation:
+        document.getElementById(
+          "pulse-lab-generation"
+        ),
 
+      fitness:
+        document.getElementById(
+          "pulse-lab-fitness"
+        ),
 
-      if (
-        previous &&
-        previous.generation ===
-        lab.generation
-      ) {
+      gates:
+        document.getElementById(
+          "pulse-lab-gates"
+        ),
 
-        log(
-          `Best fitness: ${Math.floor(
-            previous.best
-          )} | Gates: ${
-            previous.gates
-          } | Survival: ${
-            previous.time.toFixed(1)
-          }s`
-        );
-      }
-    }
-  }
+      alive:
+        document.getElementById(
+          "pulse-lab-alive"
+        ),
 
+      agents:
+        document.getElementById(
+          "pulse-lab-agents"
+        ),
 
-  /* =====================================================
-     PREVIEW
-  ===================================================== */
+      log:
+        document.getElementById(
+          "pulse-lab-log"
+        ),
 
-  function resizePreview() {
+      canvas:
+        document.getElementById(
+          "pulse-lab-canvas"
+        )
+    };
 
-    const rect =
-      preview.getBoundingClientRect();
-
-
-    const dpr =
-      Math.min(
-        window.devicePixelRatio || 1,
-        2
-      );
-
-
-    preview.width =
-      rect.width * dpr;
-
-
-    preview.height =
-      rect.height * dpr;
-
-
-    previewCtx.setTransform(
-      dpr,
-      0,
-      0,
-      dpr,
-      0,
-      0
-    );
-  }
-
-
-  window.addEventListener(
-    "resize",
-    resizePreview
-  );
-
-
-  resizePreview();
-
-
-  function drawAgentPreview() {
-
-    if (
-      !lab.open
-    ) {
-      return;
-    }
-
-
-    const w =
-      preview.clientWidth;
-
-
-    const h =
-      preview.clientHeight;
-
-
-    previewCtx.fillStyle =
-      "#030911";
-
-
-    previewCtx.fillRect(
-      0,
-      0,
-      w,
-      h
-    );
-
-
-    /*
-      Horizon lines.
-    */
-
-    previewCtx.strokeStyle =
-      "rgba(98,231,255,.08)";
-
-
-    for (
-      let y = 30;
-      y < h;
-      y += 40
-    ) {
-
-      previewCtx.beginPath();
-
-      previewCtx.moveTo(
-        0,
-        y
-      );
-
-      previewCtx.lineTo(
-        w,
-        y
-      );
-
-      previewCtx.stroke();
-    }
-
-
-    if (
-      lab.population.length === 0
-    ) {
-
-      previewCtx.fillStyle =
-        "rgba(217,251,255,.3)";
-
-      previewCtx.font =
-        "12px system-ui";
-
-      previewCtx.textAlign =
-        "center";
-
-      previewCtx.fillText(
-        "PRESS START EVOLUTION",
-        w / 2,
-        h / 2
-      );
-
-      return;
-    }
-
-
-    /*
-      Draw each agent as a tiny
-      glowing particle.
-
-      This gives a visual sense
-      of the population learning.
-    */
-
-    lab.population.forEach(
-      (agent, index) => {
-
-        const x =
-          70 +
-          (
-            (
-              agent.worldX %
-              700
-            ) /
-            700
-          ) *
-          (
-            w - 120
+    document
+      .getElementById(
+        "pulse-lab-open"
+      )
+      .addEventListener(
+        "click",
+        () => {
+          lab.ui.overlay.classList.remove(
+            "pulse-lab-hidden"
           );
+        }
+      );
 
+    document
+      .getElementById(
+        "pulse-lab-close"
+      )
+      .addEventListener(
+        "click",
+        () => {
+          lab.ui.overlay.classList.add(
+            "pulse-lab-hidden"
+          );
+        }
+      );
 
-        const y =
-          clamp(
-            agent.y,
-            0,
-            1
-          ) *
-          (
-            h - 35
-          ) +
-          15;
+    document
+      .getElementById(
+        "pulse-lab-start"
+      )
+      .addEventListener(
+        "click",
+        () => {
+          lab.running = true;
+        }
+      );
 
+    document
+      .getElementById(
+        "pulse-lab-breed"
+      )
+      .addEventListener(
+        "click",
+        () => {
+          breedNextGeneration();
+        }
+      );
 
-        previewCtx.globalAlpha =
-          agent.alive
-            ? 0.8
-            : 0.13;
+    document
+      .getElementById(
+        "pulse-lab-reset"
+      )
+      .addEventListener(
+        "click",
+        () => {
+          resetLab();
+        }
+      );
 
-
-        previewCtx.fillStyle =
-          index === 0
-            ? "#ffffff"
-            : "#62e7ff";
-
-
-        previewCtx.shadowBlur =
-          index === 0
-            ? 14
-            : 5;
-
-
-        previewCtx.shadowColor =
-          "#62e7ff";
-
-
-        previewCtx.beginPath();
-
-        previewCtx.arc(
-          x,
-          y,
-          index === 0
-            ? 4
-            : 2.5,
-          0,
-          Math.PI * 2
+    document
+      .querySelectorAll(
+        "[data-speed]"
+      )
+      .forEach(button => {
+        button.addEventListener(
+          "click",
+          () => {
+            lab.speedMultiplier =
+              Number(
+                button.dataset.speed
+              );
+          }
         );
-
-        previewCtx.fill();
-      }
-    );
-
-
-    previewCtx.globalAlpha =
-      1;
-
-
-    previewCtx.shadowBlur =
-      0;
-
-
-    /*
-      Generation label.
-    */
-
-    previewCtx.fillStyle =
-      "rgba(217,251,255,.4)";
-
-    previewCtx.font =
-      "10px monospace";
-
-    previewCtx.textAlign =
-      "left";
-
-    previewCtx.fillText(
-      `GEN ${lab.generation} • ${
-        lab.population.filter(
-          a => a.alive
-        ).length
-      } ALIVE`,
-      12,
-      18
-    );
+      });
   }
 
-
-  /* =====================================================
-     PUBLIC API
-  ===================================================== */
-
-  window.PulseLab = {
-
-    version:
-      "1.0",
-
-
-    start() {
-
-      startEvolution();
-
-      return this.getState();
-    },
-
-
-    pause() {
-
-      lab.running =
-        false;
-
-      updateLabUI();
-
-      return this.getState();
-    },
-
-
-    breed() {
-
-      breedNextGeneration();
-
-      return this.getState();
-    },
-
-
-    reset() {
-
-      resetEvolution();
-
-      return this.getState();
-    },
-
-
-    setSpeed(speed) {
-
-      lab.speedMode =
-        clamp(
-          Number(speed) || 1,
-          1,
-          20
-        );
-
-
-      return this.getState();
-    },
-
-
-    getState() {
-
-      return {
-
-        version:
-          this.version,
-
-        open:
-          lab.open,
-
-        running:
-          lab.running,
-
-        generation:
-          lab.generation,
-
-        speed:
-          lab.speedMode,
-
-        population:
-          lab.population.map(
-            agent => ({
-
-              id:
-                agent.id,
-
-              alive:
-                agent.alive,
-
-              fitness:
-                agent.fitness,
-
-              score:
-                agent.score,
-
-              gates:
-                agent.gatesCleared,
-
-              time:
-                agent.time,
-
-              shards:
-                agent.shards
-            })
-          ),
-
-        bestEver:
-          lab.bestEver
-            ? {
-
-                fitness:
-                  lab.bestEver.fitness,
-
-                gates:
-                  lab.bestEver
-                    .gatesCleared,
-
-                time:
-                  lab.bestEver.time
-              }
-            : null
-      };
+  function injectStyles() {
+    if (
+      document.getElementById(
+        "pulse-lab-styles"
+      )
+    ) {
+      return;
     }
-  };
 
+    const style =
+      document.createElement(
+        "style"
+      );
 
-  /* =====================================================
-     START LOOP
-  ===================================================== */
+    style.id =
+      "pulse-lab-styles";
 
-  requestAnimationFrame(
-    simulationLoop
-  );
+    style.textContent = `
+      #pulse-lab-open {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 9998;
+        border: 1px solid rgba(255,255,255,.2);
+        border-radius: 12px;
+        padding: 11px 15px;
+        background: rgba(15,20,30,.9);
+        color: white;
+        font-weight: 800;
+        cursor: pointer;
+        backdrop-filter: blur(12px);
+      }
 
+      #pulse-lab-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: rgba(2,5,12,.86);
+        backdrop-filter: blur(14px);
+        overflow: auto;
+        padding: 18px;
+      }
 
-  /*
-    Don't start evolution automatically.
+      .pulse-lab-hidden {
+        display: none !important;
+      }
 
-    User gets control over when the
-    first generation begins.
-  */
+      #pulse-lab-panel {
+        width: min(1100px, 100%);
+        margin: auto;
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 24px;
+        background: #0b1019;
+        color: #eef5ff;
+        padding: 20px;
+        box-shadow: 0 30px 100px rgba(0,0,0,.5);
+      }
 
-  createPopulation();
+      .pulse-lab-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 15px;
+        margin-bottom: 18px;
+      }
 
-  updateLabUI();
+      .pulse-lab-title {
+        font-size: 28px;
+        font-weight: 950;
+        letter-spacing: .08em;
+      }
 
-})();
+      .pulse-lab-subtitle {
+        opacity: .5;
+        font-size: 11px;
+        letter-spacing: .16em;
+        margin-top: 4px;
+      }
+
+      #pulse-lab-close {
+        width: 42px;
+        height: 42px;
+        border: 0;
+        border-radius: 12px;
+        background: rgba(255,255,255,.08);
+        color: white;
+        font-size: 25px;
+        cursor: pointer;
+      }
+
+      .pulse-lab-stats {
+        display: grid;
+        grid-template-columns:
+          repeat(4, 1fr);
+        gap: 10px;
+      }
+
+      .pulse-lab-stats > div {
+        padding: 14px;
+        border-radius: 14px;
+        background: rgba(255,255,255,.045);
+        border: 1px solid rgba(255,255,255,.07);
+      }
+
+      .pulse-lab-stats span {
+        display: block;
+        opacity: .45;
+        font-size: 10px;
+        letter-spacing: .12em;
+      }
+
+      .pulse-lab-stats strong {
+        display: block;
+        font-size: 22px;
+        margin-top: 5px;
+      }
+
+      .pulse-lab-controls,
+      .pulse-lab-speed {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .pulse-lab-controls button,
+      .pulse-lab-speed button {
+        border: 1px solid rgba(255,255,255,.1);
+        border-radius: 10px;
+        background: rgba(255,255,255,.07);
+        color: white;
+        padding:
