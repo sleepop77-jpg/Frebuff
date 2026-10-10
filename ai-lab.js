@@ -1,700 +1,498 @@
+
+"use strict";
+
+/*
+  PULSEWING AI LAB
+  Standalone AI Lab for the existing game.
+  Uses window.PulseWingAI from app.js.
+*/
+
 (() => {
-  "use strict";
+  if (window.__PULSEWING_LAB_LOADED__) return;
+  window.__PULSEWING_LAB_LOADED__ = true;
 
-  /*
-   * PULSE LAB
-   * AI evolution + genetic archive + live-game AI controller.
-   *
-   * Fully client-side.
-   * GitHub Pages compatible.
-   */
+  const API = () => window.PulseWingAI;
+  const SAVE_KEY = "pulsewing-ai-lab-v1";
+  const POPULATION_SIZE = 24;
+  const ELITE_COUNT = 4;
+  const INPUTS = 4;
+  const HIDDEN = 8;
+  const WEIGHT_COUNT = INPUTS * HIDDEN + HIDDEN +
+    HIDDEN + 1;
 
-  const STORAGE_KEY = "pulse-lab-agents-v2";
-  const SETTINGS_KEY = "pulse-lab-settings-v2";
-
-  const CONFIG = {
-    population: 24,
-    eliteCount: 5,
-
-    mutationRate: 0.12,
-    mutationStrength: 0.32,
-
-    simulationHz: 30,
-    maxSteps: 4200,
-
-    gravity: 1420,
-    pulseVelocity: -455,
-
-    baseSpeed: 190,
-    maxSpeed: 410,
-
-    startGap: 175,
-    minGap: 108,
-
-    gateSpacingMin: 230,
-    gateSpacingMax: 330,
-
-    playerRadius: 15,
-    gateWidth: 42,
-
-    archiveLimit: 30
-  };
-
-  const LAB = {
+  const lab = {
+    open: false,
+    training: false,
+    controlling: false,
     generation: 1,
-    running: false,
-    paused: false,
-    speedMultiplier: 1,
-
+    episode: 0,
+    bestFitness: 0,
+    bestGates: 0,
+    currentFitness: 0,
     population: [],
-    history: [],
-
-    bestEver: null,
-    generationBest: null,
-
-    liveBrain: null,
-    liveEnabled: false,
-    liveInterval: null,
-
-    selectedAgent: null,
-
-    seed: 918273,
-    idCounter: 1,
-
-    ui: {},
-    canvas: null,
-    ctx: null,
-
-    animationFrame: null,
-    lastFrame: 0,
-    accumulator: 0,
-
-    mode: "evolution"
+    fitnesses: [],
+    brainIndex: 0,
+    brain: null,
+    lastAction: 0,
+    lastDistance: Infinity,
+    lastY: 0,
+    episodeStarted: false,
+    episodesThisGeneration: 0,
+    timer: 0,
+    alive: false,
+    best: null
   };
 
-  /* ---------------------------------------------------------
-     Utilities
-  --------------------------------------------------------- */
-
-  function clamp(v, min, max) {
-    return Math.max(min, Math.min(max, v));
+  function randomWeight() {
+    return Math.random() * 2 - 1;
   }
 
-  function random() {
-    LAB.seed = (LAB.seed * 1664525 + 1013904223) >>> 0;
-    return LAB.seed / 4294967296;
-  }
-
-  function rand(min, max) {
-    return min + random() * (max - min);
-  }
-
-  function gaussian() {
-    let u = 0;
-    let v = 0;
-
-    while (u === 0) u = random();
-    while (v === 0) v = random();
-
-    return Math.sqrt(-2 * Math.log(u)) *
-      Math.cos(Math.PI * 2 * v);
-  }
-
-  function makeId() {
-    return "agent-" + Date.now().toString(36) + "-" +
-      (LAB.idCounter++).toString(36);
-  }
-
-  function safeName(name) {
-    return String(name || "Unnamed Agent")
-      .replace(/[<>]/g, "")
-      .slice(0, 32);
+  function createBrain() {
+    return Array.from(
+      { length: WEIGHT_COUNT },
+      randomWeight
+    );
   }
 
   function sigmoid(x) {
-    return 1 / (1 + Math.exp(-x));
+    return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, x))));
   }
 
-  /* ---------------------------------------------------------
-     Brain
-  --------------------------------------------------------- */
+  function think(brain, inputs) {
+    let p = 0;
+    const hidden = [];
 
-  class Brain {
-    constructor(inputSize = 6, hiddenSize = 8, outputSize = 1) {
-      this.inputSize = inputSize;
-      this.hiddenSize = hiddenSize;
-      this.outputSize = outputSize;
-
-      this.w1 = Array.from(
-        { length: hiddenSize },
-        () => Array.from(
-          { length: inputSize },
-          () => rand(-1, 1)
-        )
-      );
-
-      this.b1 = Array.from(
-        { length: hiddenSize },
-        () => rand(-0.5, 0.5)
-      );
-
-      this.w2 = Array.from(
-        { length: outputSize },
-        () => Array.from(
-          { length: hiddenSize },
-          () => rand(-1, 1)
-        )
-      );
-
-      this.b2 = Array.from(
-        { length: outputSize },
-        () => rand(-0.5, 0.5)
-      );
+    for (let h = 0; h < HIDDEN; h++) {
+      let sum = brain[p++];
+      for (let i = 0; i < INPUTS; i++) {
+        sum += inputs[i] * brain[p++];
+      }
+      hidden.push(Math.tanh(sum));
     }
 
-    clone() {
-      const b = new Brain(
-        this.inputSize,
-        this.hiddenSize,
-        this.outputSize
-      );
-
-      b.w1 = this.w1.map(row => [...row]);
-      b.b1 = [...this.b1];
-      b.w2 = this.w2.map(row => [...row]);
-      b.b2 = [...this.b2];
-
-      return b;
+    let output = brain[p++];
+    for (let h = 0; h < HIDDEN; h++) {
+      output += hidden[h] * brain[p++];
     }
 
-    forward(inputs) {
-      const hidden = [];
-
-      for (let i = 0; i < this.hiddenSize; i++) {
-        let sum = this.b1[i];
-
-        for (let j = 0; j < this.inputSize; j++) {
-          sum += this.w1[i][j] * (inputs[j] || 0);
-        }
-
-        hidden.push(Math.tanh(sum));
-      }
-
-      let output = this.b2[0];
-
-      for (let i = 0; i < this.hiddenSize; i++) {
-        output += this.w2[0][i] * hidden[i];
-      }
-
-      return sigmoid(output);
-    }
-
-    mutate(rate = CONFIG.mutationRate, strength = CONFIG.mutationStrength) {
-      for (let i = 0; i < this.w1.length; i++) {
-        for (let j = 0; j < this.w1[i].length; j++) {
-          if (random() < rate) {
-            this.w1[i][j] += gaussian() * strength;
-          }
-        }
-      }
-
-      for (let i = 0; i < this.b1.length; i++) {
-        if (random() < rate) {
-          this.b1[i] += gaussian() * strength;
-        }
-      }
-
-      for (let i = 0; i < this.w2.length; i++) {
-        for (let j = 0; j < this.w2[i].length; j++) {
-          if (random() < rate) {
-            this.w2[i][j] += gaussian() * strength;
-          }
-        }
-      }
-
-      for (let i = 0; i < this.b2.length; i++) {
-        if (random() < rate) {
-          this.b2[i] += gaussian() * strength;
-        }
-      }
-
-      return this;
-    }
-
-    crossover(other) {
-      const child = this.clone();
-
-      for (let i = 0; i < child.w1.length; i++) {
-        for (let j = 0; j < child.w1[i].length; j++) {
-          if (random() < 0.5) {
-            child.w1[i][j] = other.w1[i][j];
-          }
-        }
-      }
-
-      for (let i = 0; i < child.b1.length; i++) {
-        if (random() < 0.5) {
-          child.b1[i] = other.b1[i];
-        }
-      }
-
-      for (let i = 0; i < child.w2.length; i++) {
-        for (let j = 0; j < child.w2[i].length; j++) {
-          if (random() < 0.5) {
-            child.w2[i][j] = other.w2[i][j];
-          }
-        }
-      }
-
-      for (let i = 0; i < child.b2.length; i++) {
-        if (random() < 0.5) {
-          child.b2[i] = other.b2[i];
-        }
-      }
-
-      return child;
-    }
-
-    serialize() {
-      return {
-        inputSize: this.inputSize,
-        hiddenSize: this.hiddenSize,
-        outputSize: this.outputSize,
-        w1: this.w1,
-        b1: this.b1,
-        w2: this.w2,
-        b2: this.b2
-      };
-    }
-
-    static deserialize(data) {
-      const b = new Brain(
-        data.inputSize || 6,
-        data.hiddenSize || 8,
-        data.outputSize || 1
-      );
-
-      if (Array.isArray(data.w1)) b.w1 = data.w1.map(r => [...r]);
-      if (Array.isArray(data.b1)) b.b1 = [...data.b1];
-      if (Array.isArray(data.w2)) b.w2 = data.w2.map(r => [...r]);
-      if (Array.isArray(data.b2)) b.b2 = [...data.b2];
-
-      return b;
-    }
+    return sigmoid(output);
   }
 
-  /* ---------------------------------------------------------
-     Headless PULSEWING-like simulation
-  --------------------------------------------------------- */
-
-  class Agent {
-    constructor(brain = new Brain(), metadata = {}) {
-      this.id = metadata.id || makeId();
-      this.name = safeName(metadata.name || "Agent " + LAB.idCounter);
-
-      this.brain = brain;
-
-      this.generationBorn =
-        metadata.generationBorn || LAB.generation;
-
-      this.reset();
-    }
-
-    reset() {
-      this.y = 0.5;
-      this.vy = 0;
-
-      this.worldX = 0;
-      this.speed = CONFIG.baseSpeed;
-
-      this.score = 0;
-      this.gatesCleared = 0;
-      this.shards = 0;
-      this.nearMisses = 0;
-      this.combo = 1;
-
-      this.alive = true;
-      this.steps = 0;
-      this.age = 0;
-
-      this.nextGateX = 260;
-      this.gates = [];
-
-      this.spawnInitialGates();
-    }
-
-    spawnInitialGates() {
-      let x = 260;
-
-      for (let i = 0; i < 10; i++) {
-        this.spawnGate(x);
-        x += rand(
-          CONFIG.gateSpacingMin,
-          CONFIG.gateSpacingMax
-        );
-      }
-    }
-
-    currentGap() {
-      const difficulty =
-        clamp(this.steps / 1800, 0, 1);
-
-      return CONFIG.startGap +
-        (CONFIG.minGap - CONFIG.startGap) * difficulty;
-    }
-
-    spawnGate(x) {
-      const gap = this.currentGap();
-
-      const margin = 0.16;
-
-      const center = rand(
-        margin + gap / 900,
-        1 - margin - gap / 900
-      );
-
-      this.gates.push({
-        x,
-        center,
-        gap,
-        width: CONFIG.gateWidth,
-        passed: false
-      });
-
-      this.nextGateX = x;
-    }
-
-    ensureGates() {
-      let last =
-        this.gates.length
-          ? this.gates[this.gates.length - 1].x
-          : this.worldX + 260;
-
-      while (last < this.worldX + 1500) {
-        last += rand(
-          CONFIG.gateSpacingMin,
-          CONFIG.gateSpacingMax
-        );
-
-        this.spawnGate(last);
-      }
-    }
-
-    nearestGate() {
-      for (const gate of this.gates) {
-        if (!gate.passed &&
-            gate.x + gate.width > this.worldX - 10) {
-          return gate;
-        }
-      }
-
-      return null;
-    }
-
-    observe() {
-      const gate = this.nearestGate();
-
-      if (!gate) {
-        return [0, 0, 1, 0.5, 1, 0];
-      }
-
-      const dx =
-        (gate.x - this.worldX) / 500;
-
-      const player =
-        clamp(this.y, 0, 1);
-
-      const center =
-        clamp(gate.center, 0, 1);
-
-      const gap =
-        clamp(gate.gap / CONFIG.startGap, 0, 1);
-
-      const velocity =
-        clamp(this.vy / 500, -1, 1);
-
-      const speed =
-        clamp(
-          (this.speed - CONFIG.baseSpeed) /
-          (CONFIG.maxSpeed - CONFIG.baseSpeed),
-          0,
-          1
-        );
-
-      return [
-        clamp(dx, -1, 2),
-        velocity,
-        clamp(center - player, -1, 1),
-        center,
-        gap,
-        speed
-      ];
-    }
-
-    think() {
-      return this.brain.forward(this.observe());
-    }
-
-    pulse() {
-      if (!this.alive) return;
-
-      this.vy = CONFIG.pulseVelocity;
-    }
-
-    update(dt) {
-      if (!this.alive) return;
-
-      this.steps++;
-      this.age += dt;
-
-      const difficulty =
-        clamp(this.steps / CONFIG.maxSteps, 0, 1);
-
-      this.speed =
-        CONFIG.baseSpeed +
-        (CONFIG.maxSpeed - CONFIG.baseSpeed) *
-        difficulty;
-
-      const output = this.think();
-
-      if (output > 0.5) {
-        this.pulse();
-      }
-
-      this.vy += CONFIG.gravity * dt;
-
-      this.y +=
-        (this.vy * dt) / 520;
-
-      this.worldX +=
-        this.speed * dt;
-
-      this.checkGates();
-      this.checkCollision();
-      this.ensureGates();
-
-      this.gates =
-        this.gates.filter(
-          gate => gate.x > this.worldX - 100
-        );
-
-      if (this.steps >= CONFIG.maxSteps) {
-        this.die();
-      }
-    }
-
-    checkGates() {
-      for (const gate of this.gates) {
-        if (gate.passed) continue;
-
-        if (gate.x + gate.width < this.worldX) {
-          gate.passed = true;
-
-          this.gatesCleared++;
-          this.combo =
-            Math.min(20, this.combo + 1);
-
-          this.score +=
-            100 * this.combo;
-
-          const distance =
-            Math.abs(this.y - gate.center);
-
-          if (
-            distance <
-            gate.gap / 1050 + 0.06
-          ) {
-            this.nearMisses++;
-            this.score += 35;
-          }
-
-          continue;
-        }
-      }
-    }
-
-    checkCollision() {
-      if (
-        this.y < 0.035 ||
-        this.y > 0.965
-      ) {
-        this.die();
-        return;
-      }
-
-      const gate = this.nearestGate();
-
-      if (!gate) return;
-
-      const horizontal =
-        this.worldX + 0.025 >= gate.x &&
-        this.worldX - 0.025 <=
-          gate.x + gate.width;
-
-      if (!horizontal) return;
-
-      const halfGap =
-        gate.gap / 1040;
-
-      const safeTop =
-        gate.center - halfGap;
-
-      const safeBottom =
-        gate.center + halfGap;
-
-      if (
-        this.y < safeTop ||
-        this.y > safeBottom
-      ) {
-        this.die();
-      }
-    }
-
-    die() {
-      this.alive = false;
-    }
-
-    fitness() {
-      return (
-        this.age * 3 +
-        this.gatesCleared * 150 +
-        this.nearMisses * 60 +
-        this.score * 0.5
-      );
-    }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
   }
 
-  /* ---------------------------------------------------------
-     Evolution
-  --------------------------------------------------------- */
+  function getInputs(state) {
+    const gate = state.nearestGate;
+    const player = state.player;
+
+    if (!gate || !player) return [0, 0, 0, 0];
+
+    const distance = gate.x - player.x;
+    const height = Math.max(
+      300,
+      document.getElementById("gameCanvas")?.clientHeight || 420
+    );
+
+    return [
+      clamp((player.y - gate.center) / height, -1, 1),
+      clamp(player.vy / 650, -1, 1),
+      clamp(distance / 420, -1, 1),
+      clamp(gate.gap / height, 0, 1)
+    ];
+  }
+
+  function mutate(brain, rate = 0.16) {
+    return brain.map(weight => {
+      if (Math.random() < rate) {
+        return clamp(weight + randomWeight() * 0.65, -3, 3);
+      }
+      return weight;
+    });
+  }
+
+  function crossover(a, b) {
+    return a.map((weight, i) =>
+      Math.random() < 0.5 ? weight : b[i]
+    );
+  }
 
   function createPopulation() {
-    LAB.population = [];
+    lab.population = Array.from(
+      { length: POPULATION_SIZE },
+      createBrain
+    );
+    lab.fitnesses = [];
+    lab.brainIndex = 0;
+  }
 
-    for (let i = 0; i < CONFIG.population; i++) {
-      LAB.population.push(
-        new Agent(
-          new Brain(),
-          {
-            name: "Agent " + (i + 1),
-            generationBorn: LAB.generation
-          }
-        )
-      );
+  function evolve() {
+    const ranked = lab.population
+      .map((brain, i) => ({
+        brain,
+        fitness: lab.fitnesses[i] || 0
+      }))
+      .sort((a, b) => b.fitness - a.fitness);
+
+    const winner = ranked[0];
+    if (winner && winner.fitness > lab.bestFitness) {
+      lab.bestFitness = winner.fitness;
+      lab.best = winner.brain.slice();
+      lab.bestGates = Math.max(lab.bestGates, lab.lastGates || 0);
+    }
+
+    const next = ranked
+      .slice(0, ELITE_COUNT)
+      .map(item => item.brain.slice());
+
+    while (next.length < POPULATION_SIZE) {
+      const a = ranked[Math.floor(Math.random() * Math.min(8, ranked.length))].brain;
+      const b = ranked[Math.floor(Math.random() * Math.min(8, ranked.length))].brain;
+      next.push(mutate(crossover(a, b)));
+    }
+
+    lab.population = next;
+    lab.fitnesses = [];
+    lab.brainIndex = 0;
+    lab.generation++;
+    lab.episodesThisGeneration = 0;
+    saveBest(false);
+    updateUI();
+  }
+
+  function saveBest(showMessage = true) {
+    if (!lab.best) {
+      if (showMessage) alert("Train the AI first to create a best brain.");
+      return;
+    }
+
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        brain: lab.best,
+        fitness: lab.bestFitness,
+        gates: lab.bestGates,
+        generation: lab.generation,
+        savedAt: new Date().toISOString()
+      }));
+
+      if (showMessage) {
+        const status = document.getElementById("pw-status");
+        if (status) status.textContent = "Best brain saved on this device.";
+      }
+    } catch (error) {
+      console.error("PULSEWING save failed:", error);
+      alert("Could not save the brain. Check device storage.");
     }
   }
 
-  function evaluateStep() {
-    let alive = 0;
+  function loadBest() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SAVE_KEY) || "null");
+      if (saved && Array.isArray(saved.brain) &&
+          saved.brain.length === WEIGHT_COUNT) {
+        lab.best = saved.brain;
+        lab.bestFitness = Number(saved.fitness) || 0;
+        lab.bestGates = Number(saved.gates) || 0;
+      }
+    } catch (error) {
+      console.warn("Could not load saved AI brain:", error);
+    }
+  }
 
-    for (const agent of LAB.population) {
-      if (agent.alive) {
-        agent.update(1 / CONFIG.simulationHz);
+  function stopControl() {
+    lab.controlling = false;
+    lab.training = false;
+    lab.alive = false;
+    const button = document.getElementById("pw-train");
+    if (button) button.textContent = "Start Training";
+    updateUI();
+  }
+
+  function startEpisode() {
+    if (!API()) {
+      setStatus("Game API not found. Make sure app.js loads first.");
+      stopControl();
+      return;
+    }
+
+    lab.brain = lab.population[lab.brainIndex];
+    lab.episode++;
+    lab.currentFitness = 0;
+    lab.lastGates = 0;
+    lab.lastAction = 0;
+    lab.lastDistance = Infinity;
+    lab.episodeStarted = true;
+    lab.alive = true;
+
+    API().reset();
+    lab.timer = performance.now();
+    updateUI();
+  }
+
+  function finishEpisode(state) {
+    if (!lab.episodeStarted) return;
+
+    lab.episodeStarted = false;
+    lab.alive = false;
+
+    const gates = Number(state?.gatesCleared) || 0;
+    const score = Number(state?.score) || 0;
+    const elapsed = Math.max(0, (performance.now() - lab.timer) / 1000);
+
+    // Gates and score are the main reward; survival adds a small bonus.
+    const fitness = gates * 100 + score + Math.min(elapsed, 90) * 0.2;
+    lab.lastGates = gates;
+    lab.fitnesses[lab.brainIndex] = fitness;
+    lab.episodesThisGeneration++;
+
+    if (fitness > lab.bestFitness) {
+      lab.bestFitness = fitness;
+      lab.bestGates = Math.max(lab.bestGates, gates);
+      lab.best = lab.brain.slice();
+      saveBest(false);
+    }
+
+    if (lab.training) {
+      lab.brainIndex++;
+      if (lab.brainIndex >= POPULATION_SIZE) {
+        evolve();
+      }
+      if (lab.training) {
+        // Give the browser a moment to render between attempts.
+        window.setTimeout(startEpisode, 180);
+      }
+    } else {
+      lab.controlling = false;
+      updateUI();
+    }
+
+    updateUI();
+  }
+
+  function tick() {
+    const api = API();
+
+    if ((lab.training || lab.controlling) && api) {
+      let state = api.getState();
+
+      if (state.gameState === "gameover") {
+        finishEpisode(state);
+      } else if (state.gameState === "playing") {
+        lab.alive = true;
+        const inputs = getInputs(state);
+        const brain = lab.brain || lab.best;
+
+        if (brain) {
+          // Trigger a pulse only when the network predicts it is needed.
+          const output = think(brain, inputs);
+          if (output > 0.57) {
+            api.pulse();
+          }
+        } else {
+          // Safe starter policy until the first brain is saved.
+          const gate = state.nearestGate;
+          if (gate && state.player.y > gate.center + 8 &&
+              state.player.vy > -80 && gate.x - state.player.x < 155) {
+            api.pulse();
+          }
+        }
+
+        // Progress score rewards getting closer to the next gate.
+        const nextDistance = state.nearestGate
+          ? state.nearestGate.x - state.player.x
+          : Infinity;
+
+        if (Number.isFinite(nextDistance) &&
+            Number.isFinite(lab.lastDistance)) {
+          lab.currentFitness += Math.max(
+            0,
+            lab.lastDistance - nextDistance
+          ) * 0.002;
+        }
+        lab.lastDistance = nextDistance;
+      } else if (lab.training && !lab.episodeStarted) {
+        startEpisode();
       }
 
-      if (agent.alive) alive++;
+      updateUI();
     }
 
-    return alive;
+    window.requestAnimationFrame(tick);
   }
 
-  function finishGeneration() {
-    LAB.population.sort(
-      (a, b) => b.fitness() - a.fitness()
-    );
+  function setStatus(message) {
+    const el = document.getElementById("pw-status");
+    if (el) el.textContent = message;
+  }
 
-    const best = LAB.population[0];
+  function updateUI() {
+    const $ = id => document.getElementById(id);
+    if (!$("pw-panel")) return;
 
-    LAB.generationBest = snapshotAgent(best);
+    $("pw-generation").textContent = lab.generation;
+    $("pw-episode").textContent = lab.episode;
+    $("pw-best").textContent = Math.round(lab.bestFitness);
+    $("pw-gates").textContent = lab.bestGates;
+    $("pw-alive").textContent = lab.alive ? "YES" : "NO";
+    $("pw-progress").style.width =
+      `${Math.min(100, lab.episodesThisGeneration / POPULATION_SIZE * 100)}%`;
 
-    if (
-      !LAB.bestEver ||
-      best.fitness() > LAB.bestEver.fitness
-    ) {
-      LAB.bestEver = snapshotAgent(best);
-    }
+    $("pw-train").textContent = lab.training ? "Pause Training" : "Start Training";
+    $("pw-control").textContent = lab.controlling ? "Stop AI Control" : "AI Take Control";
+  }
 
-    LAB.history.unshift({
-      generation: LAB.generation,
-      fitness: best.fitness(),
-      gates: best.gatesCleared,
-      score: best.score
+  function makeUI() {
+    if (document.getElementById("pw-panel")) return;
+
+    const style = document.createElement("style");
+    style.textContent = `
+      #pw-open{border:1px solid #62e7ff;background:#0b2030;color:#b8f7ff;
+        padding:10px 14px;border-radius:10px;font-weight:800;cursor:pointer}
+      #pw-panel{position:fixed;inset:0;z-index:99999;display:none;
+        align-items:center;justify-content:center;padding:16px;
+        background:rgba(1,7,15,.82);font-family:system-ui,sans-serif;color:#eafaff}
+      #pw-panel.pw-visible{display:flex}
+      #pw-card{width:min(520px,100%);max-height:90vh;overflow:auto;
+        background:#081522;border:1px solid #244a67;border-radius:18px;
+        padding:20px;box-shadow:0 20px 80px #000}
+      #pw-card h2{margin:0;color:#62e7ff;letter-spacing:2px}
+      #pw-card p{color:#9bb8c8;font-size:13px;line-height:1.5}
+      .pw-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:16px 0}
+      .pw-stat{background:#102438;border:1px solid #1e3b51;border-radius:12px;padding:12px}
+      .pw-stat small{display:block;color:#8ba9ba;font-size:10px;letter-spacing:1px}
+      .pw-stat strong{font-size:24px}
+      .pw-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+      .pw-actions button{border:1px solid #28516a;border-radius:10px;padding:12px;
+        color:#eafaff;background:#102438;font-weight:750;cursor:pointer}
+      .pw-actions button:first-child{background:#0c5365;border-color:#62e7ff}
+      #pw-progress-wrap{height:6px;background:#172c43;border-radius:99px;overflow:hidden;margin:14px 0}
+      #pw-progress{height:100%;width:0;background:#62e7ff;transition:width .2s}
+      #pw-status{min-height:20px;font-size:12px;color:#9bb8c8}
+      #pw-close{float:right;border:0;background:transparent;color:#c5dce7;font-size:22px;cursor:pointer}
+    `;
+    document.head.appendChild(style);
+
+    const button = document.createElement("button");
+    button.id = "pw-open";
+    button.textContent = "AI LAB";
+    button.style.cssText = "position:fixed;right:14px;bottom:14px;z-index:9998";
+    document.body.appendChild(button);
+
+    const panel = document.createElement("div");
+    panel.id = "pw-panel";
+    panel.innerHTML = `
+      <section id="pw-card">
+        <button id="pw-close" aria-label="Close">×</button>
+        <h2>PULSEWING / AI LAB</h2>
+        <p>Train a small neural network against the real game. The best brain is stored locally on this device.</p>
+        <div class="pw-grid">
+          <div class="pw-stat"><small>GENERATION</small><strong id="pw-generation">1</strong></div>
+          <div class="pw-stat"><small>EPISODE</small><strong id="pw-episode">0</strong></div>
+          <div class="pw-stat"><small>BEST FITNESS</small><strong id="pw-best">0</strong></div>
+          <div class="pw-stat"><small>BEST GATES</small><strong id="pw-gates">0</strong></div>
+        </div>
+        <div id="pw-progress-wrap"><div id="pw-progress"></div></div>
+        <div class="pw-actions">
+          <button id="pw-train">Start Training</button>
+          <button id="pw-control">AI Take Control</button>
+          <button id="pw-save">Save Best Brain</button>
+          <button id="pw-reset">Reset Training</button>
+        </div>
+        <p id="pw-status">Ready. Start training to evaluate the first population.</p>
+        <p><b>Note:</b> Training runs game episodes one at a time. Keep the game tab open while training.</p>
+      </section>`;
+    document.body.appendChild(panel);
+
+    button.addEventListener("click", () => {
+      lab.open = true;
+      panel.classList.add("pw-visible");
+      updateUI();
     });
 
-    LAB.history =
-      LAB.history.slice(0, 20);
+    document.getElementById("pw-close").addEventListener("click", () => {
+      lab.open = false;
+      panel.classList.remove("pw-visible");
+    });
 
-    LAB.generation++;
+    panel.addEventListener("click", event => {
+      if (event.target === panel) {
+        lab.open = false;
+        panel.classList.remove("pw-visible");
+      }
+    });
 
-    breedNextGeneration();
+    document.getElementById("pw-train").addEventListener("click", () => {
+      if (lab.training) {
+        lab.training = false;
+        lab.controlling = false;
+        lab.episodeStarted = false;
+        setStatus("Training paused.");
+      } else {
+        if (!API()) {
+          setStatus("PulseWingAI API is missing. Check that app.js loads before ai-lab.js.");
+          return;
+        }
+        if (!lab.population.length) createPopulation();
+        lab.training = true;
+        lab.controlling = false;
+        setStatus("Training in progress. Let the episodes run.");
+        startEpisode();
+      }
+      updateUI();
+    });
 
-    addLog(
-      "Generation " +
-      (LAB.generation - 1) +
-      " → best " +
-      Math.round(best.fitness()) +
-      " fitness / " +
-      best.gatesCleared +
-      " gates"
-    );
+    document.getElementById("pw-control").addEventListener("click", () => {
+      if (lab.controlling) {
+        lab.controlling = false;
+        lab.episodeStarted = false;
+        setStatus("AI control stopped.");
+      } else {
+        if (!API()) {
+          setStatus("PulseWingAI API is missing.");
+          return;
+        }
+        lab.training = false;
+        lab.controlling = true;
+        lab.brain = lab.best || lab.population[0] || createBrain();
+        lab.episodeStarted = true;
+        API().reset();
+        lab.timer = performance.now();
+        setStatus(lab.best ? "Best saved brain controlling the game." :
+          "Starter brain controlling the game. Train to improve it.");
+      }
+      updateUI();
+    });
 
-    render();
+    document.getElementById("pw-save").addEventListener("click", () => saveBest(true));
+
+    document.getElementById("pw-reset").addEventListener("click", () => {
+      stopControl();
+      createPopulation();
+      lab.generation = 1;
+      lab.episode = 0;
+      lab.bestFitness = 0;
+      lab.bestGates = 0;
+      lab.best = null;
+      lab.lastGates = 0;
+      localStorage.removeItem(SAVE_KEY);
+      setStatus("Training population reset.");
+      updateUI();
+    });
   }
 
-  function breedNextGeneration() {
-    const sorted = [...LAB.population]
-      .sort(
-        (a, b) =>
-          b.fitness() - a.fitness()
-      );
+  function init() {
+    loadBest();
+    createPopulation();
+    makeUI();
+    updateUI();
+    window.requestAnimationFrame(tick);
+  }
 
-    const next = [];
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+})();
 
-    for (
-      let i = 0;
-      i < CONFIG.eliteCount &&
-      i < sorted.length;
-      i++
-    ) {
-      const clone =
-        new Agent(
-          sorted[i].brain.clone(),
-          {
-            name:
-              "Elite " +
-              (i + 1) +
-              " • G" +
-              LAB.generation,
-            generationBorn: LAB.generation
-          }
-        );
-
-      next.push(clone);
-    }
-
-    while (
-      next.length <
-      CONFIG.population
-    ) {
-      const parentA =
-        tournamentSelect(sorted);
-
-      const parentB =
-        tournamentSelect(sorted);
-
-      const childBrain =
-        parentA.brain
-          .crossover(parentB.brain);
-
-      childBrain.mutate(
-        CONFIG.mutationRate,
-        CONFIG.mutationStrength
-      );
-
-      next.push(
-        new Agent(
-          childBrain,
-          {
-            name:
-              "Agent " +
-              (next.length + 1),
+===== END PUSHBRIDGE =====
