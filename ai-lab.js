@@ -403,11 +403,18 @@
       </section>`;
     document.body.appendChild(panel);
 
-    button.addEventListener("click", () => {
-      lab.open = true;
-      panel.classList.add("pw-visible");
-      updateUI();
-    });
+    const openLab = () => {
+lab.open = true;
+panel.classList.add("pw-visible");
+updateUI();
+};
+
+button.addEventListener("click", openLab);
+
+const startOpenButton = document.getElementById("pw-open-start");
+if (startOpenButton) {
+startOpenButton.addEventListener("click", openLab);
+}
 
     document.getElementById("pw-close").addEventListener("click", () => {
       lab.open = false;
