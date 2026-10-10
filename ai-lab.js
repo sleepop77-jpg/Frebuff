@@ -253,15 +253,19 @@
     }
 
     if (lab.training) {
-      lab.brainIndex++;
-      if (lab.brainIndex >= POPULATION_SIZE) {
-        evolve();
-      }
-      if (lab.training) {
-        // Give the browser a moment to render between attempts.
-        window.setTimeout(startEpisode, 180);
-      }
-    } else {
+setStatus("Episode " + lab.episode + " finished · " +
+gates + " gates · restarting next episode...");
+lab.brainIndex++;
+if (lab.brainIndex >= POPULATION_SIZE) {
+evolve();
+}
+if (lab.training) {
+// Start a fresh episode after the game-over state is cleared.
+window.setTimeout(() => {
+if (lab.training) startEpisode();
+}, 350);
+}
+} else {
       lab.controlling = false;
       updateUI();
     }
